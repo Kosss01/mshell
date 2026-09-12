@@ -89,7 +89,13 @@ impl Shell {
 
         let mut i = 1;
         while i < args.len() {
-            if args[i] == "--tutor" {
+            if args[i] == "--help" || args[i] == "-h" {
+                print_cli_help();
+                return 0;
+            } else if args[i] == "--version" || args[i] == "-v" || args[i] == "-V" {
+                println!("shellpilot {}", env!("CARGO_PKG_VERSION"));
+                return 0;
+            } else if args[i] == "--tutor" {
                 is_tutor = true;
                 i += 1;
             } else if args[i] == "--sandbox" {
@@ -1341,6 +1347,31 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn print_cli_help() {
+    println!("ShellPilot {}", env!("CARGO_PKG_VERSION"));
+    println!("The Flight Simulator for the Unix Command Line — Gamified Linux Training & Interactive Cockpit\n");
+    println!("USAGE:");
+    println!("    shellpilot [OPTIONS] [SCRIPT] [ARGS...]");
+    println!("    pilot [OPTIONS] [SCRIPT] [ARGS...]\n");
+    println!("OPTIONS:");
+    println!("    -h, --help        Print help information and exit");
+    println!("    -v, --version     Print version information and exit");
+    println!("    -c <COMMAND>      Execute command string non-interactively");
+    println!("    --tutor           Launch directly into interactive Flight Academy");
+    println!("    --sandbox         Launch in isolated virtual staging server (~/lab)");
+    println!("    --plain           Launch standard interactive shell without academy banner\n");
+    println!("BUILTINS & COCKPIT:");
+    println!("    tutor             26 progressive Flight Academy lessons across 7 curriculum tracks");
+    println!("    drill             7 simulated P1/P2 production outage chaos drills");
+    println!("    cadet / profile   View pilot rank, XP progression, and 11 achievement badges");
+    println!("    whatif <cmd>      Dry-run blast radius analysis before running destructive commands");
+    println!("    undo [diff]       Roll back workspace to pre-command state with unified diff");
+    println!("    service           Manage simulated server daemons (web, worker)");
+    println!("    db                Embedded SQLite query engine and schema inspector");
+    println!("    tree / cheat      Visual folder hierarchy and instant offline flag cheatsheets");
+    println!("    doctor            Contextual diagnostic engine for failed commands");
+}
+
 struct RawMode {
     original: libc::termios,
 }
@@ -1945,5 +1976,15 @@ mod tests {
         assert_eq!(n3, 17); // start of "shellpilot"
         let n4 = next_word_boundary(text, n3);
         assert_eq!(n4, 27); // end of text
+    }
+
+    #[test]
+    fn test_cli_help_and_version_options() {
+        let mut shell = Shell::ephemeral();
+        assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "--help".to_string()]), 0);
+        assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "-h".to_string()]), 0);
+        assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "--version".to_string()]), 0);
+        assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "-v".to_string()]), 0);
+        assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "-V".to_string()]), 0);
     }
 }

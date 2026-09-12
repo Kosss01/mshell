@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Kosss01/shellpilot?style=flat-square" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/platform-Linux-1793D1?style=flat-square&logo=linux&logoColor=white" alt="Linux">
   <img src="https://img.shields.io/badge/Rust-2024-DEA584?style=flat-square&logo=rust&logoColor=white" alt="Rust 2024">
-  <img src="https://img.shields.io/badge/tests-189%20passed-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-198%20passed-brightgreen?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/cockpit-interactive%20sandbox-blueviolet?style=flat-square" alt="Cockpit">
 </p>
 
@@ -334,10 +334,11 @@ profile            # Alias for 'cadet'
 
 1. **Recruit** (0 XP)
 2. **Flight Cadet** (100 XP)
-3. **Junior Pilot** (300 XP)
-4. **Senior Aviator** (600 XP)
-5. **Flight Commander** (1000 XP)
-6. **Fleet Admiral** (1500+ XP)
+3. **Junior Plumber** (250 XP)
+4. **Systems Guardian** (500 XP)
+5. **Detective Inspector** (800 XP)
+6. **Incident First Responder** (1200 XP)
+7. **Master Flight Commander** (1800+ XP)
 
 ### Unlockable Achievement Badges
 

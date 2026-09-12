@@ -3136,8 +3136,12 @@ fn show_help(args: &[String]) -> ExecutionResult {
     println!("  doctor                    diagnose last failed command");
     println!("  service [start|stop...]   manage simulated server daemons");
     println!("  curl [-I|-s] URL          query mock local services");
+    println!("  db [SQL|schema]           query embedded SQLite database");
+    println!("  netstat                   inspect active simulated sockets");
+    println!("  ping HOST                 simulate ICMP network latency");
     println!("  cadet | profile           view flight dossier, XP, and badges");
     println!("  drill [start|check|hint]  emergency incident drills");
+    println!("  tour | explore            interactive flight simulator guided tour");
     ExecutionResult::Builtin
 }
 
