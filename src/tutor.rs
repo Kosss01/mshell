@@ -344,8 +344,9 @@ fn build_cadet_track() -> LessonTrack {
                 description: "Creating deep directory trees with mkdir -p.",
                 instructions: "The payment team needs directories for a new v2 microservice. Create 'services/payment/handlers/v2' and 'services/payment/tests' in a single command using 'mkdir -p'.",
                 hints: &[
-                    "Without '-p', mkdir fails if parent folders do not exist.",
-                    "Pass multiple target paths: 'mkdir -p services/payment/handlers/v2 services/payment/tests' or use brace expansion: 'mkdir -p services/payment/{handlers/v2,tests}'.",
+                    "Without the '-p' (parents) flag, mkdir fails if parent subdirectories do not exist.",
+                    "Pass multiple target paths to mkdir: 'mkdir -p services/payment/handlers/v2 services/payment/tests'.",
+                    "Alternatively, use brace expansion: 'mkdir -p services/payment/{handlers/v2,tests}'.",
                 ],
                 solution: "mkdir -p services/payment/{handlers/v2,tests}",
                 setup: |_ws| Ok(()),
@@ -474,8 +475,9 @@ fn build_plumber_track() -> LessonTrack {
                 description: "Writing stdout to files: overwrite vs append.",
                 instructions: "1. Write 'SYSTEM AUDIT INITIALIZED' to 'logs/audit.log' using '>'.\n2. Append 'AUDIT RUNNER: root' on a new line using '>>'.",
                 hints: &[
-                    "echo 'SYSTEM AUDIT INITIALIZED' > logs/audit.log",
-                    "echo 'AUDIT RUNNER: root' >> logs/audit.log",
+                    "Single '>' overwrites or creates a file with command output.",
+                    "Double '>>' appends new lines to the end of a file without destroying existing content.",
+                    "Execute both steps chained with '&&': echo 'SYSTEM AUDIT INITIALIZED' > logs/audit.log && echo 'AUDIT RUNNER: root' >> logs/audit.log",
                 ],
                 solution: "echo 'SYSTEM AUDIT INITIALIZED' > logs/audit.log && echo 'AUDIT RUNNER: root' >> logs/audit.log",
                 setup: |ws| {
@@ -510,7 +512,8 @@ fn build_plumber_track() -> LessonTrack {
                 description: "Separating diagnostics and error logs with file descriptor 2.",
                 instructions: "Run './scripts/healthcheck.sh' redirecting its standard error (stderr) to 'logs/health_warnings.log' using '2>'.",
                 hints: &[
-                    "Standard error uses file descriptor 2.",
+                    "File descriptor 1 is stdout, file descriptor 2 is stderr.",
+                    "Syntax '2> <file>' isolates warnings and diagnostic errors into a dedicated log file.",
                     "Run: ./scripts/healthcheck.sh 2> logs/health_warnings.log",
                 ],
                 solution: "./scripts/healthcheck.sh 2> logs/health_warnings.log",
@@ -535,8 +538,9 @@ fn build_plumber_track() -> LessonTrack {
                 description: "Chaining standard output into another process's standard input.",
                 instructions: "Count how many times HTTP 404 status codes appear in 'logs/access.log' using grep and wc, saving count to 'logs/404_count.txt'.\nE.g.: grep ' 404 ' logs/access.log | wc -l > logs/404_count.txt",
                 hints: &[
-                    "Combine grep and wc using pipe '|' and redirect to 'logs/404_count.txt' with '>'.",
-                    "grep ' 404 ' logs/access.log | wc -l > logs/404_count.txt",
+                    "Filter matching 404 response lines: grep ' 404 ' logs/access.log",
+                    "Pipe output into word count lines flag: '| wc -l'",
+                    "Redirect the final total into the target file: grep ' 404 ' logs/access.log | wc -l > logs/404_count.txt",
                 ],
                 solution: "grep ' 404 ' logs/access.log | wc -l > logs/404_count.txt",
                 setup: |_ws| Ok(()),
@@ -561,16 +565,16 @@ fn build_plumber_track() -> LessonTrack {
                 instructions: "Extract the client IP addresses (column 1) from 'logs/access.log', sort them, remove duplicates, and write the output to 'logs/client_ips.txt'.\nE.g.: cut -d' ' -f1 logs/access.log | sort -u > logs/client_ips.txt",
                 hints: &[
                     "Use cut with space delimiter: 'cut -d\" \" -f1 logs/access.log'.",
-                    "Pipe into sort with unique flag: '| sort -u'.",
-                    "Redirect output: '> logs/client_ips.txt'.",
+                    "Pipe into sort with unique flag: '| sort -u' (or '| sort | uniq').",
+                    "Redirect to target: cut -d' ' -f1 logs/access.log | sort -u > logs/client_ips.txt",
                 ],
                 solution: "cut -d' ' -f1 logs/access.log | sort -u > logs/client_ips.txt",
                 setup: |_ws| Ok(()),
                 validate: |ws, _last_cmd| {
                     let out = ws.join("logs").join("client_ips.txt");
                     if let Ok(content) = fs::read_to_string(&out) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        if lines == vec![
+                        let lines: Vec<&str> = content.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+                        let ascii_sorted = vec![
                             "10.0.0.55",
                             "10.0.0.99",
                             "172.16.0.12",
@@ -578,7 +582,17 @@ fn build_plumber_track() -> LessonTrack {
                             "192.168.1.100",
                             "192.168.1.101",
                             "192.168.1.105",
-                        ] {
+                        ];
+                        let natural_sorted = vec![
+                            "10.0.0.55",
+                            "10.0.0.99",
+                            "172.16.0.4",
+                            "172.16.0.12",
+                            "192.168.1.100",
+                            "192.168.1.101",
+                            "192.168.1.105",
+                        ];
+                        if lines == ascii_sorted || lines == natural_sorted {
                             return ValidationResult::Success {
                                 feedback: "Brilliant! You extracted and deduplicated the client IP addresses.".into(),
                             };
@@ -609,7 +623,9 @@ fn build_guardian_track() -> LessonTrack {
                 description: "Granting execution permissions with chmod +x or chmod 755.",
                 instructions: "'scripts/deploy.sh' is currently not executable (mode 644). Grant execution permission to it using 'chmod +x scripts/deploy.sh'.",
                 hints: &[
-                    "Use 'chmod +x scripts/deploy.sh' or 'chmod 755 scripts/deploy.sh'.",
+                    "Use 'ls -l scripts/deploy.sh' to inspect current permissions (notice missing 'x' bits).",
+                    "The '+x' flag adds execute permission for user, group, and others.",
+                    "Run: chmod +x scripts/deploy.sh (or 'chmod 755 scripts/deploy.sh')",
                 ],
                 solution: "chmod +x scripts/deploy.sh",
                 setup: |ws| {
@@ -648,8 +664,9 @@ fn build_guardian_track() -> LessonTrack {
                 description: "Protecting secret keys by restricting permissions to owner-only.",
                 instructions: "'keys/deploy_key.pem' is currently readable by everyone (mode 666). Restrict it so ONLY the owner can read/write (mode 600).",
                 hints: &[
-                    "600 means: User read/write (4+2), Group none (0), Others none (0).",
-                    "Run 'chmod 600 keys/deploy_key.pem'.",
+                    "SSH and TLS private keys require strict owner-only permissions or tools like ssh will refuse them.",
+                    "Octal 600 grants user read/write (4+2=6), group none (0), and others none (0).",
+                    "Run: chmod 600 keys/deploy_key.pem",
                 ],
                 solution: "chmod 600 keys/deploy_key.pem",
                 setup: |ws| {
@@ -689,8 +706,9 @@ fn build_guardian_track() -> LessonTrack {
                 description: "Locking down critical configuration files against accidental modification.",
                 instructions: "Harden 'config/database.yaml' by stripping all write permissions for everyone (set to read-only mode 444 or 'chmod a-w config/database.yaml').",
                 hints: &[
-                    "Mode 444 means read-only for user, group, and others (r--r--r--).",
-                    "Run 'chmod 444 config/database.yaml' or 'chmod a-w config/database.yaml'.",
+                    "Stripping write permissions prevents unintended edits, truncations, or deletions by processes.",
+                    "Mode 444 means read-only for user (4), group (4), and others (4).",
+                    "Run: chmod 444 config/database.yaml (or 'chmod a-w config/database.yaml')",
                 ],
                 solution: "chmod 444 config/database.yaml",
                 setup: |ws| {
@@ -743,8 +761,9 @@ fn build_detective_track() -> LessonTrack {
                 description: "Extracting security authentication failures with grep -i.",
                 instructions: "Search for the word 'failed' (ignoring case) in 'logs/auth.log' using 'grep -i' and write the matching incident lines to 'logs/failed_logins.txt'.",
                 hints: &[
-                    "Use the '-i' flag for case-insensitive search.",
-                    "grep -i 'failed' logs/auth.log > logs/failed_logins.txt",
+                    "Grep searches streams and text files for regular expressions or string patterns.",
+                    "The '-i' flag enables case-insensitive matching ('failed', 'FAILED', 'Failed').",
+                    "Run: grep -i 'failed' logs/auth.log > logs/failed_logins.txt",
                 ],
                 solution: "grep -i 'failed' logs/auth.log > logs/failed_logins.txt",
                 setup: |_ws| Ok(()),
@@ -774,8 +793,9 @@ fn build_detective_track() -> LessonTrack {
                 description: "Finding scattered ad-hoc backup files across directory hierarchies.",
                 instructions: "Find all files ending in '.bak' across the repository and save their relative paths to 'backups/stale_backups.txt'.\nE.g.: mkdir -p backups && find . -name \"*.bak\" | sort > backups/stale_backups.txt",
                 hints: &[
-                    "Use 'find . -name \"*.bak\"' to search recursively from current directory.",
-                    "Run: mkdir -p backups && find . -name \"*.bak\" | sort > backups/stale_backups.txt",
+                    "The 'find' tool recursively walks directory hierarchies based on criteria like names, types, or sizes.",
+                    "Use 'find . -name \"*.bak\"' to locate all backup files starting from the current directory.",
+                    "Sort paths and redirect: mkdir -p backups && find . -name \"*.bak\" | sort > backups/stale_backups.txt",
                 ],
                 solution: "mkdir -p backups && find . -name \"*.bak\" | sort > backups/stale_backups.txt",
                 setup: |ws| {
@@ -807,16 +827,16 @@ fn build_detective_track() -> LessonTrack {
                 description: "Processing tabular customer data without heavy tools.",
                 instructions: "Extract the customer email column (column 3) from 'data/customers.csv', skip the header row, sort the emails alphabetically, and write them to 'data/customer_emails.txt'.\nE.g.: tail -n +2 data/customers.csv | cut -d',' -f3 | sort > data/customer_emails.txt",
                 hints: &[
-                    "Use 'tail -n +2 data/customers.csv' to skip the header line.",
-                    "Use 'cut -d\",\" -f3' to select the email column.",
-                    "Pipe into 'sort' and redirect to 'data/customer_emails.txt'.",
+                    "Use 'tail -n +2 data/customers.csv' to stream lines starting from row 2 (skipping the CSV header).",
+                    "Pipe into cut with comma delimiter to select column 3: '| cut -d\",\" -f3'.",
+                    "Pipe into sort and redirect: tail -n +2 data/customers.csv | cut -d',' -f3 | sort > data/customer_emails.txt",
                 ],
                 solution: "tail -n +2 data/customers.csv | cut -d',' -f3 | sort > data/customer_emails.txt",
                 setup: |_ws| Ok(()),
                 validate: |ws, _last_cmd| {
                     let out = ws.join("data").join("customer_emails.txt");
                     if let Ok(content) = fs::read_to_string(&out) {
-                        let lines: Vec<&str> = content.lines().collect();
+                        let lines: Vec<&str> = content.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
                         if lines == vec![
                             "alice@acme.com",
                             "bob@techcorp.io",
@@ -857,9 +877,9 @@ fn build_incident_track() -> LessonTrack {
                 description: "A runaway debug trace is consuming disk. Safely truncate it without deleting the file.",
                 instructions: "Alert: Disk space at 99%! A runaway trace log 'logs/debug_huge.log' is filling up the disk. Truncate it to 0 bytes (e.g. ': > logs/debug_huge.log' or 'truncate -s 0 logs/debug_huge.log'), while keeping 'logs/access.log' untouched!",
                 hints: &[
-                    "Inspect 'logs/' with 'ls -lh logs/'.",
-                    "Truncate a file to 0 bytes with ': > logs/debug_huge.log' or 'truncate -s 0 logs/debug_huge.log'.",
-                    "Do NOT delete the file with rm!",
+                    "Check disk usage and file sizes in the logs directory: 'ls -lh logs/' to spot the runaway debug log.",
+                    "In Linux, truncating keeps the file inode intact while resetting its size to 0 bytes without stopping daemons holding the file open.",
+                    "Run ': > logs/debug_huge.log' or '> logs/debug_huge.log' or 'truncate -s 0 logs/debug_huge.log' (do not delete the file with rm).",
                 ],
                 solution: ": > logs/debug_huge.log",
                 setup: |ws| {
@@ -892,8 +912,9 @@ fn build_incident_track() -> LessonTrack {
                 description: "The web server crashed due to an invalid port in 'config/server.conf'. Fix it.",
                 instructions: "'config/server.conf' has an invalid port line: 'port = NaN_PORT_CRASH'. Update it to 'port = 8080'.",
                 hints: &[
-                    "Use sed or edit the file to restore the valid port.",
-                    "sed -i 's/NaN_PORT_CRASH/8080/' config/server.conf",
+                    "Inspect the corrupted configuration file with 'cat config/server.conf' or 'grep port config/server.conf'.",
+                    "Substitute the corrupted text in place using sed: 'sed -i \"s/NaN_PORT_CRASH/8080/\" config/server.conf'.",
+                    "Alternatively, edit or rewrite the file line so it specifies 'port = 8080'.",
                 ],
                 solution: "sed -i 's/NaN_PORT_CRASH/8080/' config/server.conf",
                 setup: |ws| {
@@ -907,7 +928,8 @@ fn build_incident_track() -> LessonTrack {
                 validate: |ws, _last_cmd| {
                     let conf_path = ws.join("config").join("server.conf");
                     if let Ok(content) = fs::read_to_string(&conf_path)
-                        && content.contains("port = 8080") && !content.contains("NaN_PORT_CRASH") {
+                        && (content.contains("port = 8080") || content.contains("port=8080"))
+                        && !content.contains("NaN_PORT_CRASH") {
                             return ValidationResult::Success {
                                 feedback: "Server configuration fixed! Port successfully restored to 8080.".into(),
                             };
@@ -924,8 +946,9 @@ fn build_incident_track() -> LessonTrack {
                 description: "A crashed daemon left behind 'services/worker.lock'. Clear it to allow startup.",
                 instructions: "The worker service fails to boot because 'services/worker.lock' is present. Remove 'services/worker.lock' so the service can restart.",
                 hints: &[
-                    "Use 'rm services/worker.lock'.",
-                    "Do NOT delete 'services/worker.service'!",
+                    "Daemons create PID lockfiles on startup to avoid duplicate processes; a crashed process leaves the lock behind.",
+                    "Inspect the folder with 'ls services/' to verify 'worker.lock' and 'worker.service'.",
+                    "Remove only the lockfile: 'rm services/worker.lock'. Do NOT delete 'services/worker.service'!",
                 ],
                 solution: "rm services/worker.lock",
                 setup: |ws| {
@@ -957,8 +980,9 @@ fn build_incident_track() -> LessonTrack {
                 description: "CI/CD deployment failed with 'bad interpreter' and 'Permission denied'.",
                 instructions: "1. Update the first line of 'scripts/deploy.sh' from '#!/usr/bin/broken_bash' to '#!/bin/sh'.\n2. Make 'scripts/deploy.sh' executable ('chmod +x scripts/deploy.sh').",
                 hints: &[
-                    "Fix shebang with sed: sed -i 's|#!/usr/bin/broken_bash|#!/bin/sh|' scripts/deploy.sh",
-                    "Grant execute permissions: chmod +x scripts/deploy.sh",
+                    "A corrupted shebang path causes exec failures like 'bad interpreter: No such file or directory'.",
+                    "Fix the first line with sed: sed -i 's|#!/usr/bin/broken_bash|#!/bin/sh|' scripts/deploy.sh",
+                    "Grant execute permissions with: chmod +x scripts/deploy.sh (or chmod 755 scripts/deploy.sh).",
                 ],
                 solution: "sed -i 's|#!/usr/bin/broken_bash|#!/bin/sh|' scripts/deploy.sh && chmod +x scripts/deploy.sh",
                 setup: |ws| {
@@ -1029,17 +1053,18 @@ fn build_sre_track() -> LessonTrack {
                 track_id: "sre",
                 title: "Microservice Lifecycle & Status",
                 description: "Modern cloud platforms manage microservices. ShellPilot includes a built-in service manager. Start the payment gateway web service with 'service start web' and verify with 'service status web'.",
-                instructions: "Run 'service start web' to boot the payment microservice.",
+                instructions: "Run 'service start web' to boot the payment microservice (you can check status with 'service status web').",
                 hints: &[
-                    "Start the service: service start web",
-                    "Check status afterwards: service status web",
+                    "ShellPilot has a built-in microservice daemon manager accessible via 'service'.",
+                    "Start the web gateway service with: service start web",
+                    "Verify service health and PID with: service status web (or service status)",
                 ],
                 solution: "service start web",
                 setup: |_ws| Ok(()),
                 validate: |_ws, last_cmd| {
                     if let Some(cmd) = last_cmd {
                         let c = cmd.trim();
-                        if c.contains("service start web") || c.contains("service restart web") {
+                        if c.contains("service start") || c.contains("service restart") || c.contains("service status") {
                             return ValidationResult::Success {
                                 feedback: "Payment web gateway booted successfully! Listening on port 8080.".into(),
                             };
@@ -1057,8 +1082,9 @@ fn build_sre_track() -> LessonTrack {
                 description: "Destructive commands like 'rm -rf' are dangerous in production. ShellPilot provides 'whatif' to simulate any command, displaying targeted files, size, and blast radius without modifying disk.",
                 instructions: "Run a dry-run preview of deleting logs: whatif 'rm -rf logs/*.log'",
                 hints: &[
-                    "Execute: whatif 'rm -rf logs/*.log'",
-                    "Notice how whatif details deleted files without altering disk.",
+                    "The 'whatif' command runs an isolated AST dry-run without modifying files.",
+                    "It reveals affected files, disk usage impact, and potential blast-radius risks.",
+                    "Run: whatif 'rm -rf logs/*.log' (or whatif rm -rf logs/*.log)",
                 ],
                 solution: "whatif 'rm -rf logs/*.log'",
                 setup: |_ws| Ok(()),
@@ -1081,8 +1107,9 @@ fn build_sre_track() -> LessonTrack {
                 description: "When commands fail, ShellPilot's diagnostic engine 'doctor' analyzes error outputs, file permissions, and directory structures to recommend exact remedies.",
                 instructions: "Simulate a typo by running 'cat app/server', observe the error, and then type 'doctor'.",
                 hints: &[
-                    "First trigger the missing file error: cat app/server",
-                    "Then run: doctor",
+                    "ShellPilot's 'doctor' command inspects the last error, exit status, and directory layout.",
+                    "First trigger a failure, for example: cat app/server (the actual file is app/server.py).",
+                    "Immediately consult the doctor: doctor",
                 ],
                 solution: "cat app/server; doctor",
                 setup: |_ws| Ok(()),
@@ -1105,8 +1132,9 @@ fn build_sre_track() -> LessonTrack {
                 description: "Once services are running, test HTTP endpoints using ShellPilot's built-in 'curl'. Inspect the health check endpoint of your simulated web service.",
                 instructions: "Run 'curl http://localhost:8080/health' (ensure 'service start web' has been run).",
                 hints: &[
-                    "Ensure service is running: service start web",
-                    "Then query health endpoint: curl http://localhost:8080/health",
+                    "ShellPilot has a simulated HTTP client 'curl' for testing microservice APIs.",
+                    "Make sure the service is online: service start web",
+                    "Query the endpoint: curl http://localhost:8080/health",
                 ],
                 solution: "curl http://localhost:8080/health",
                 setup: |_ws| Ok(()),
@@ -1142,8 +1170,9 @@ fn build_data_alchemist_track() -> LessonTrack {
                 description: "Unlike plain Unix pipes that pass raw byte streams, ShellPilot's '|>' operator understands structured data. Extract the '.name' property of each item in 'data/inventory.jsonl' and save to 'data/names.txt'.",
                 instructions: "Run: cat data/inventory.jsonl |> .name > data/names.txt",
                 hints: &[
-                    "Use the structured pipe operator: |>",
-                    "Syntax: cat data/inventory.jsonl |> .name > data/names.txt",
+                    "The structured pipe operator '|>' parses JSON lines or structured data on the fly.",
+                    "Use dot notation (e.g. '.name' or '.price') to project specific fields from each item.",
+                    "Run: cat data/inventory.jsonl |> .name > data/names.txt",
                 ],
                 solution: "cat data/inventory.jsonl |> .name > data/names.txt",
                 setup: |_ws| Ok(()),
@@ -1167,15 +1196,17 @@ fn build_data_alchemist_track() -> LessonTrack {
                 description: "Filter structured objects on the fly. Select items from 'data/inventory.jsonl' where '.price == 350.0' or '.qty == 14' and save to 'data/filtered.jsonl'.",
                 instructions: "Run: cat data/inventory.jsonl |> filter (.qty == 14) > data/filtered.jsonl",
                 hints: &[
-                    "Use the filter clause: |> filter (.qty == 14)",
-                    "Full command: cat data/inventory.jsonl |> filter (.qty == 14) > data/filtered.jsonl",
+                    "The '|> filter (<condition>)' operator filters streams by evaluating boolean field expressions.",
+                    "You can filter on quantity: '|> filter (.qty == 14)' or price: '|> filter (.price == 350.0)'.",
+                    "Run: cat data/inventory.jsonl |> filter (.qty == 14) > data/filtered.jsonl (or with .price == 350.0).",
                 ],
                 solution: "cat data/inventory.jsonl |> filter (.qty == 14) > data/filtered.jsonl",
                 setup: |_ws| Ok(()),
                 validate: |ws, _last_cmd| {
                     let out_file = ws.join("data/filtered.jsonl");
                     if let Ok(content) = fs::read_to_string(&out_file)
-                        && content.contains("Rack Server 1U") && !content.contains("Ethernet Cable") {
+                        && (content.contains("Rack Server 1U") || content.contains("Gigabit Switch 24p"))
+                        && !content.contains("Ethernet Cable") {
                             return ValidationResult::Success {
                                 feedback: "Stream filtered successfully! Only matching objects were retained.".into(),
                             };
@@ -1192,7 +1223,9 @@ fn build_data_alchemist_track() -> LessonTrack {
                 description: "Limit stream output to the top N records using '|> take N'. Take the first 2 records from 'data/inventory.jsonl' into 'data/top2.jsonl'.",
                 instructions: "Run: cat data/inventory.jsonl |> take 2 > data/top2.jsonl",
                 hints: &[
-                    "Syntax: cat data/inventory.jsonl |> take 2 > data/top2.jsonl",
+                    "The '|> take N' operator extracts the first N structured records from a pipeline.",
+                    "Pipe the inventory data stream into take: 'cat data/inventory.jsonl |> take 2'.",
+                    "Redirect the truncated stream: cat data/inventory.jsonl |> take 2 > data/top2.jsonl",
                 ],
                 solution: "cat data/inventory.jsonl |> take 2 > data/top2.jsonl",
                 setup: |_ws| Ok(()),
@@ -1218,7 +1251,9 @@ fn build_data_alchemist_track() -> LessonTrack {
                 description: "Transmute structured formats instantly. Convert 'app/config.json' to clean YAML and save to 'config/app_config.yaml'.",
                 instructions: "Run: cat app/config.json |> yaml > config/app_config.yaml",
                 hints: &[
-                    "Syntax: cat app/config.json |> yaml > config/app_config.yaml",
+                    "ShellPilot converts between JSON, YAML, and TOML seamlessly using '|> yaml', '|> json', and '|> toml'.",
+                    "Stream the source JSON file: 'cat app/config.json |> yaml'.",
+                    "Redirect the transmuted stream: cat app/config.json |> yaml > config/app_config.yaml",
                 ],
                 solution: "cat app/config.json |> yaml > config/app_config.yaml",
                 setup: |_ws| Ok(()),
@@ -1306,7 +1341,10 @@ mod tests {
         assert!(hint2.contains("Hint (2/"));
 
         let hint3 = tutor.next_hint().unwrap();
-        assert!(hint3.contains("You have seen all hints"));
+        assert!(hint3.contains("Hint (3/"));
+
+        let hint4 = tutor.next_hint().unwrap();
+        assert!(hint4.contains("You have seen all hints"));
 
         fs::remove_dir_all(&temp).ok();
     }

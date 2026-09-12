@@ -130,15 +130,15 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Runaway Crash Dump Quota",
         severity: "P1 - CRITICAL",
         scenario: "The monitoring alert fired: simulated disk quota is exhausted by a rogue crash dump in 'logs/'. Find and remove the large crash dump without deleting live logs.",
-        hint: "Inspect 'logs/' with 'ls -lh logs/'. Look for 'logs/crash_dump.tmp' and remove it with 'rm'.",
+        hint: "1. Inspect 'logs/' with 'ls -lh logs/' to find the large crash dump.\n   2. Remove or truncate 'logs/crash_dump.tmp' using 'rm logs/crash_dump.tmp' (or ': > logs/crash_dump.tmp').\n   3. Ensure live logs like 'logs/access.log' remain untouched.",
         setup: |ws| {
             let p = ws.join("logs/crash_dump.tmp");
             fs::write(p, "DUMP_GARBAGE\n".repeat(5000))
         },
         validate: |ws| {
             let p = ws.join("logs/crash_dump.tmp");
-            if p.exists() {
-                return Err("'logs/crash_dump.tmp' is still present on disk.".to_string());
+            if p.exists() && fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(true) {
+                return Err("'logs/crash_dump.tmp' is still present with non-zero size on disk.".to_string());
             }
             if !ws.join("logs/access.log").exists() {
                 return Err("Critical error: live 'logs/access.log' was accidentally deleted!".to_string());
@@ -151,7 +151,7 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Payment API Crash Loop",
         severity: "P1 - CRITICAL",
         scenario: "Payment web service crashed on startup and refuses to boot. Check 'service logs web', repair corrupted port in 'config/server.conf' back to 8080, and restart with 'service start web'.",
-        hint: "Read 'service logs web'. Edit 'config/server.conf' with sed or echo to set 'port = 8080', then run 'service start web'.",
+        hint: "1. Inspect failure logs with 'service logs web' or view 'config/server.conf'.\n   2. Fix the corrupted port line: replace 'NaN_PORT_CRASH' with '8080' (e.g. sed -i 's/NaN_PORT_CRASH/8080/' config/server.conf).\n   3. Restart the service with 'service start web'.",
         setup: |ws| {
             let p = ws.join("config/server.conf");
             if p.exists() {
@@ -179,7 +179,7 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Deadlocked Worker Lockfile",
         severity: "P2 - HIGH",
         scenario: "The transaction queue worker cannot boot because a crashed previous run left an uncleaned PID lockfile at 'services/worker.lock'. Remove the lockfile and start the worker.",
-        hint: "Check 'services/worker.lock'. Remove it with 'rm services/worker.lock' and start the service with 'service start worker'.",
+        hint: "1. Check the services folder with 'ls -la services/'.\n   2. A stale PID lockfile blocks boot. Remove it with 'rm services/worker.lock'.\n   3. Start the queue worker with 'service start worker' or verify with 'drill check'.",
         setup: |ws| {
             fs::create_dir_all(ws.join("services"))?;
             fs::write(ws.join("services/worker.lock"), "19842\n")
@@ -197,7 +197,7 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Security Breach: Key Permissions",
         severity: "P1 - CRITICAL",
         scenario: "Security scanner detected that SSH private key 'keys/deploy_key.pem' is world-writable (mode 777)! Immediately restrict it to owner-only mode 600.",
-        hint: "Run 'chmod 600 keys/deploy_key.pem'. Check permissions with 'ls -l keys/deploy_key.pem'.",
+        hint: "1. Check current key permissions with 'ls -l keys/deploy_key.pem'.\n   2. SSH keys must be strictly owner-only (mode 600) to prevent unauthorized access.\n   3. Run 'chmod 600 keys/deploy_key.pem', then verify with 'drill check'.",
         setup: |ws| {
             #[cfg(unix)]
             {
@@ -231,7 +231,7 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Expired SSL Certificate Emergency",
         severity: "P1 - CRITICAL",
         scenario: "The payment gateway is throwing SSL handshake failures because 'config/ssl/cert.pem' has expired. A valid renewed certificate is staged in 'keys/new_cert.pem'. Copy 'keys/new_cert.pem' into 'config/ssl/cert.pem' to restore gateway encryption.",
-        hint: "Run 'cp keys/new_cert.pem config/ssl/cert.pem'. Confirm with 'cat config/ssl/cert.pem'.",
+        hint: "1. Compare certificates: 'cat config/ssl/cert.pem' (expired) and 'cat keys/new_cert.pem' (renewed).\n   2. Deploy the renewed certificate: 'cp keys/new_cert.pem config/ssl/cert.pem'.\n   3. Run 'drill check' to verify SSL gateway health.",
         setup: |ws| {
             let ssl_dir = ws.join("config/ssl");
             fs::create_dir_all(&ssl_dir)?;
@@ -264,7 +264,7 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Denial-of-Service Flood Defense",
         severity: "P1 - CRITICAL",
         scenario: "Monitoring alerts report a high-volume request flood in 'logs/access.log'. Extract client IPs to identify the abusive address, and append it to 'config/blocklist.conf' to block the attack.",
-        hint: "Find the top requester in 'logs/access.log' using 'cut -d' ' -f1 logs/access.log | sort | uniq -c'. The attacking IP is '198.51.100.42'. Add it with 'echo 198.51.100.42 >> config/blocklist.conf'.",
+        hint: "1. Analyze web traffic in 'logs/access.log': 'cut -d\" \" -f1 logs/access.log | sort | uniq -c | sort -n'.\n   2. The abusive flood originates from IP '198.51.100.42'.\n   3. Append it to the blocklist: 'echo 198.51.100.42 >> config/blocklist.conf'.",
         setup: |ws| {
             let logs_dir = ws.join("logs");
             fs::create_dir_all(&logs_dir)?;
@@ -279,10 +279,12 @@ pub const ALL_DRILLS: &[Drill] = &[
         },
         validate: |ws| {
             let blocklist = ws.join("config/blocklist.conf");
-            if let Ok(content) = fs::read_to_string(&blocklist)
-                && content.contains("198.51.100.42") {
-                    return Ok("Attacking IP 198.51.100.42 successfully neutralized in blocklist!".to_string());
-                }
+            let alt_blocklist = ws.join("blocklist.conf");
+            let found = fs::read_to_string(&blocklist).map(|c| c.contains("198.51.100.42")).unwrap_or(false)
+                || fs::read_to_string(&alt_blocklist).map(|c| c.contains("198.51.100.42")).unwrap_or(false);
+            if found {
+                return Ok("Attacking IP 198.51.100.42 successfully neutralized in blocklist!".to_string());
+            }
             Err("Offending IP 198.51.100.42 not found in 'config/blocklist.conf'.".to_string())
         },
     },
@@ -291,7 +293,7 @@ pub const ALL_DRILLS: &[Drill] = &[
         title: "Database Host Desynchronization",
         severity: "P2 - HIGH",
         scenario: "The service in 'app/config.json' cannot reach its backend because 'database.host' is configured to 'dead-db-server.internal'. Change it to '127.0.0.1' or 'localhost' to re-establish connectivity.",
-        hint: "Inspect 'app/config.json'. Update 'dead-db-server.internal' to '127.0.0.1' and save the file.",
+        hint: "1. Inspect database configuration in 'app/config.json'.\n   2. Update 'dead-db-server.internal' to active local endpoint '127.0.0.1' or 'localhost' (e.g. sed -i 's/dead-db-server.internal/127.0.0.1/' app/config.json).\n   3. Run 'drill check' to verify database connectivity.",
         setup: |ws| {
             let app_dir = ws.join("app");
             fs::create_dir_all(&app_dir)?;
