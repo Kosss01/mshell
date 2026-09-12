@@ -672,6 +672,9 @@ impl Executor {
                         return ExecutionResult::Failed;
                     }
                 };
+                if self.interactive.get() {
+                    let _ = std::env::set_current_dir(&ws);
+                }
                 let res = {
                     let mut tutor = self.tutor.borrow_mut();
                     tutor.as_mut().unwrap().start_lesson(&args[1], &ws)
@@ -755,6 +758,9 @@ impl Executor {
             }
             "reset" => {
                 let ws = self.current_workspace();
+                if self.interactive.get() {
+                    let _ = std::env::set_current_dir(&ws);
+                }
                 let res = {
                     let mut tutor = self.tutor.borrow_mut();
                     tutor.as_mut().unwrap().reset_lesson(&ws)
@@ -772,6 +778,9 @@ impl Executor {
             }
             "next" => {
                 let ws = self.current_workspace();
+                if self.interactive.get() {
+                    let _ = std::env::set_current_dir(&ws);
+                }
                 let (res, active_id) = {
                     let mut tutor = self.tutor.borrow_mut();
                     let t = tutor.as_mut().unwrap();
@@ -794,6 +803,10 @@ impl Executor {
                 }
             }
             "exit" => {
+                let ws = self.current_workspace();
+                if self.interactive.get() {
+                    let _ = std::env::set_current_dir(&ws);
+                }
                 {
                     let mut tutor = self.tutor.borrow_mut();
                     tutor.as_mut().unwrap().active_lesson_id = None;
@@ -947,6 +960,9 @@ impl Executor {
                 if args.len() < 2 {
                     eprintln!("drill: start requires a drill ID (e.g. 'drill start drill-disk')");
                     return ExecutionResult::BuiltinStatus(1);
+                }
+                if self.interactive.get() {
+                    let _ = std::env::set_current_dir(&ws);
                 }
                 let res = {
                     let mut drills = self.drills.borrow_mut();
@@ -5003,5 +5019,33 @@ mod tests {
         // 3. undo command
         let ast_undo = crate::parser::parse_ast("undo", 0).unwrap().unwrap();
         assert_eq!(executor.execute_ast(&ast_undo).status_code(), 0);
+    }
+
+    #[test]
+    fn tutor_nav_02_with_brace_expansion_works() {
+        let original_dir = std::env::current_dir().unwrap();
+        let executor = Executor::new();
+        executor.set_interactive(true);
+        let ws = executor.ensure_sandbox().unwrap();
+        let start_res = executor.tutor_cmd(&["start".into(), "nav_02".into()]);
+        assert_eq!(start_res.status_code(), 0);
+
+        // Execute mkdir with brace expansion
+        let ast = crate::parser::parse_ast("mkdir -p services/payment/{handlers/v2,tests}", 0)
+            .unwrap()
+            .unwrap();
+        let exec_res = executor.execute_ast(&ast);
+        assert_eq!(exec_res.status_code(), 0);
+
+        // Verify tutor check succeeds
+        let check_res = executor.tutor_cmd(&["check".into()]);
+        assert_eq!(check_res.status_code(), 0);
+
+        let d1 = ws.join("services").join("payment").join("handlers").join("v2");
+        let d2 = ws.join("services").join("payment").join("tests");
+        assert!(d1.is_dir(), "handlers/v2 directory must exist");
+        assert!(d2.is_dir(), "tests directory must exist");
+
+        let _ = std::env::set_current_dir(&original_dir);
     }
 }

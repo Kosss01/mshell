@@ -364,4 +364,66 @@ mod tests {
 
         fs::remove_dir_all(&path).ok();
     }
+
+    #[test]
+    fn test_all_7_drills_lifecycle_and_validation() {
+        let path = std::env::temp_dir().join(format!("shellpilot_test_all_drills_{}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+
+        let mut engine = DrillEngine::new();
+
+        for drill in ALL_DRILLS {
+            // Populate basic sandbox structure if not present
+            fs::create_dir_all(path.join("logs")).unwrap();
+            fs::write(path.join("logs/access.log"), "live logs\n").unwrap();
+            fs::create_dir_all(path.join("config")).unwrap();
+            fs::create_dir_all(path.join("services")).unwrap();
+            fs::create_dir_all(path.join("keys")).unwrap();
+            fs::create_dir_all(path.join("app")).unwrap();
+            fs::write(path.join("keys/deploy_key.pem"), "key data\n").unwrap();
+
+            engine.start_drill(drill.id, &path).unwrap();
+            assert!(engine.check_active(&path).is_err(), "Drill {} should be failing before fix", drill.id);
+
+            match drill.id {
+                "drill-disk" => {
+                    let dump = path.join("logs/crash_dump.tmp");
+                    if dump.exists() {
+                        fs::remove_file(dump).unwrap();
+                    }
+                }
+                "drill-service" => {
+                    fs::write(path.join("config/server.conf"), "port = 8080\n").unwrap();
+                }
+                "drill-lock" => {
+                    let lock = path.join("services/worker.lock");
+                    if lock.exists() {
+                        fs::remove_file(lock).unwrap();
+                    }
+                }
+                "drill-perm" => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(path.join("keys/deploy_key.pem"), fs::Permissions::from_mode(0o600)).unwrap();
+                    }
+                }
+                "drill-cert" => {
+                    fs::copy(path.join("keys/new_cert.pem"), path.join("config/ssl/cert.pem")).unwrap();
+                }
+                "drill-dos" => {
+                    fs::write(path.join("config/blocklist.conf"), "198.51.100.42\n").unwrap();
+                }
+                "drill-db" => {
+                    fs::write(path.join("app/config.json"), "{\"database\": {\"host\": \"127.0.0.1\"}}\n").unwrap();
+                }
+                _ => panic!("Unhandled drill in test: {}", drill.id),
+            }
+
+            let check_res = engine.check_active(&path);
+            assert!(check_res.is_ok(), "Drill {} failed check after repair: {:?}", drill.id, check_res);
+        }
+
+        fs::remove_dir_all(&path).ok();
+    }
 }

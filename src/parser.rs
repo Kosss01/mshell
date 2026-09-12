@@ -961,13 +961,270 @@ pub fn strip_markers(s: &str) -> String {
 pub fn expand_tokens(words: Vec<String>, last_status: i32) -> Vec<String> {
     let mut expanded = Vec::new();
     for word in words {
-        let single_expanded = expand_token(word, last_status);
-        let globs = expand_globs(&single_expanded);
-        for g in globs {
-            expanded.push(strip_markers(&g));
+        for b_word in expand_braces(&word) {
+            let single_expanded = expand_token(b_word, last_status);
+            let globs = expand_globs(&single_expanded);
+            for g in globs {
+                expanded.push(strip_markers(&g));
+            }
         }
     }
     expanded
+}
+
+pub fn expand_braces(word: &str) -> Vec<String> {
+    if !word.contains('{') || !word.contains('}') {
+        return vec![word.to_string()];
+    }
+
+    if let Some((brace_start, brace_end, alternatives)) = find_first_brace_group(word) {
+        let prefix = &word[..brace_start];
+        let suffix = &word[brace_end + 1..];
+        let mut results = Vec::new();
+
+        for alt in alternatives {
+            let combined = format!("{prefix}{alt}{suffix}");
+            results.extend(expand_braces(&combined));
+        }
+
+        results
+    } else {
+        vec![word.to_string()]
+    }
+}
+
+fn find_first_brace_group(word: &str) -> Option<(usize, usize, Vec<String>)> {
+    let mut literal = false;
+    let mut escaped = false;
+    let mut dquote = false;
+
+    let char_indices: Vec<(usize, char)> = word.char_indices().collect();
+    let mut i = 0;
+
+    while i < char_indices.len() {
+        let (idx, ch) = char_indices[i];
+
+        if ch == LITERAL_START {
+            literal = true;
+            i += 1;
+            continue;
+        }
+        if ch == LITERAL_END {
+            literal = false;
+            i += 1;
+            continue;
+        }
+        if ch == ESCAPED_START {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if ch == ESCAPED_END {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        if ch == DOUBLE_QUOTE_MARKER {
+            dquote = !dquote;
+            i += 1;
+            continue;
+        }
+
+        if ch == '{' && !literal && !escaped && !dquote {
+            let brace_start = idx;
+            let mut depth = 1;
+            let mut inner_literal = false;
+            let mut inner_escaped = false;
+            let mut inner_dquote = false;
+            let mut current_alt = String::new();
+            let mut alts = Vec::new();
+            let mut j = i + 1;
+            let mut found_match = false;
+            let mut brace_end = 0;
+
+            while j < char_indices.len() {
+                let (cur_idx, cur_ch) = char_indices[j];
+
+                if cur_ch == LITERAL_START {
+                    inner_literal = true;
+                    current_alt.push(cur_ch);
+                    j += 1;
+                    continue;
+                }
+                if cur_ch == LITERAL_END {
+                    inner_literal = false;
+                    current_alt.push(cur_ch);
+                    j += 1;
+                    continue;
+                }
+                if cur_ch == ESCAPED_START {
+                    inner_escaped = true;
+                    current_alt.push(cur_ch);
+                    j += 1;
+                    continue;
+                }
+                if cur_ch == ESCAPED_END {
+                    inner_escaped = false;
+                    current_alt.push(cur_ch);
+                    j += 1;
+                    continue;
+                }
+                if cur_ch == DOUBLE_QUOTE_MARKER {
+                    inner_dquote = !inner_dquote;
+                    current_alt.push(cur_ch);
+                    j += 1;
+                    continue;
+                }
+
+                if !inner_literal && !inner_escaped && !inner_dquote {
+                    if cur_ch == '{' {
+                        depth += 1;
+                        current_alt.push(cur_ch);
+                    } else if cur_ch == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            brace_end = cur_idx;
+                            alts.push(current_alt);
+                            found_match = true;
+                            break;
+                        } else {
+                            current_alt.push(cur_ch);
+                        }
+                    } else if cur_ch == ',' && depth == 1 {
+                        alts.push(std::mem::take(&mut current_alt));
+                    } else {
+                        current_alt.push(cur_ch);
+                    }
+                } else {
+                    current_alt.push(cur_ch);
+                }
+
+                j += 1;
+            }
+
+            if found_match {
+                if alts.len() > 1 {
+                    return Some((brace_start, brace_end, alts));
+                }
+
+                if alts.len() == 1
+                    && let Some(range_alts) = parse_brace_range(&alts[0]) {
+                        return Some((brace_start, brace_end, range_alts));
+                    }
+            }
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+fn parse_brace_range(body: &str) -> Option<Vec<String>> {
+    let parts: Vec<&str> = body.split("..").collect();
+    if parts.len() != 2 && parts.len() != 3 {
+        return None;
+    }
+
+    let start_s = parts[0];
+    let end_s = parts[1];
+    let step_s = parts.get(2).copied();
+
+    if let (Ok(start), Ok(end)) = (start_s.parse::<i64>(), end_s.parse::<i64>()) {
+        let step: i64 = match step_s {
+            Some(s) => match s.parse::<i64>() {
+                Ok(st) if st > 0 => st,
+                _ => return None,
+            },
+            None => 1,
+        };
+
+        let has_leading_zero = (start_s.starts_with('0') && start_s.len() > 1)
+            || (end_s.starts_with('0') && end_s.len() > 1)
+            || (start_s.starts_with("-0") && start_s.len() > 2)
+            || (end_s.starts_with("-0") && end_s.len() > 2);
+
+        let width = if has_leading_zero {
+            start_s.len().max(end_s.len())
+        } else {
+            0
+        };
+
+        let mut res = Vec::new();
+        if start <= end {
+            let mut curr = start;
+            while curr <= end {
+                if width > 0 {
+                    res.push(format!("{:0width$}", curr));
+                } else {
+                    res.push(curr.to_string());
+                }
+                match curr.checked_add(step) {
+                    Some(next) => curr = next,
+                    None => break,
+                }
+            }
+        } else {
+            let mut curr = start;
+            while curr >= end {
+                if width > 0 {
+                    res.push(format!("{:0width$}", curr));
+                } else {
+                    res.push(curr.to_string());
+                }
+                match curr.checked_sub(step) {
+                    Some(next) => curr = next,
+                    None => break,
+                }
+            }
+        }
+        return Some(res);
+    }
+
+    if start_s.chars().count() == 1 && end_s.chars().count() == 1 {
+        let c_start = start_s.chars().next().unwrap();
+        let c_end = end_s.chars().next().unwrap();
+
+        let both_lower = c_start.is_ascii_lowercase() && c_end.is_ascii_lowercase();
+        let both_upper = c_start.is_ascii_uppercase() && c_end.is_ascii_uppercase();
+
+        if both_lower || both_upper {
+            let step: usize = match step_s {
+                Some(s) => match s.parse::<usize>() {
+                    Ok(st) if st > 0 => st,
+                    _ => return None,
+                },
+                None => 1,
+            };
+
+            let mut res = Vec::new();
+            if (c_start as u32) <= (c_end as u32) {
+                let mut curr = c_start as u32;
+                let end = c_end as u32;
+                while curr <= end {
+                    if let Some(ch) = char::from_u32(curr) {
+                        res.push(ch.to_string());
+                    }
+                    curr += step as u32;
+                }
+            } else {
+                let mut curr = c_start as u32;
+                let end = c_end as u32;
+                while curr >= end {
+                    if let Some(ch) = char::from_u32(curr) {
+                        res.push(ch.to_string());
+                    }
+                    if curr < step as u32 {
+                        break;
+                    }
+                    curr -= step as u32;
+                }
+            }
+            return Some(res);
+        }
+    }
+
+    None
 }
 
 pub fn expand_token(token: String, last_status: i32) -> String {
@@ -2578,5 +2835,66 @@ mod tests {
             }
             _ => panic!("expected Function Ast"),
         }
+    }
+
+    #[test]
+    fn expands_comma_separated_braces() {
+        let res = expand_braces("services/payment/{handlers/v2,tests}");
+        assert_eq!(
+            res,
+            vec![
+                "services/payment/handlers/v2",
+                "services/payment/tests"
+            ]
+        );
+
+        let empty_item = expand_braces("file{,.bak}");
+        assert_eq!(empty_item, vec!["file", "file.bak"]);
+
+        let three_items = expand_braces("img.{png,jpg,webp}");
+        assert_eq!(three_items, vec!["img.png", "img.jpg", "img.webp"]);
+    }
+
+    #[test]
+    fn expands_numeric_and_character_ranges() {
+        assert_eq!(expand_braces("{1..5}"), vec!["1", "2", "3", "4", "5"]);
+        assert_eq!(expand_braces("{5..1}"), vec!["5", "4", "3", "2", "1"]);
+        assert_eq!(expand_braces("{01..05}"), vec!["01", "02", "03", "04", "05"]);
+        assert_eq!(expand_braces("{1..10..3}"), vec!["1", "4", "7", "10"]);
+
+        assert_eq!(expand_braces("{a..e}"), vec!["a", "b", "c", "d", "e"]);
+        assert_eq!(expand_braces("{e..a}"), vec!["e", "d", "c", "b", "a"]);
+        assert_eq!(expand_braces("{A..C}"), vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn expands_multiple_and_nested_braces() {
+        let multi = expand_braces("a{b,c}{1,2}");
+        assert_eq!(multi, vec!["ab1", "ab2", "ac1", "ac2"]);
+
+        let nested = expand_braces("a{b,c{1,2}}d");
+        assert_eq!(nested, vec!["abd", "ac1d", "ac2d"]);
+    }
+
+    #[test]
+    fn leaves_non_expandable_braces_intact() {
+        assert_eq!(expand_braces("{foo}"), vec!["{foo}"]);
+        assert_eq!(expand_braces("{}"), vec!["{}"]);
+        assert_eq!(expand_braces("echo {var}"), vec!["echo {var}"]);
+    }
+
+    #[test]
+    fn parses_command_with_brace_expansion() {
+        let cmd = parse_input("mkdir -p services/payment/{handlers/v2,tests}")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cmd.program, "mkdir");
+        assert_eq!(
+            cmd.args,
+            vec!["-p", "services/payment/handlers/v2", "services/payment/tests"]
+        );
+
+        let quoted = parse_input("echo '{a,b}' \"{1..3}\"").unwrap().unwrap();
+        assert_eq!(quoted.args, vec!["{a,b}", "{1..3}"]);
     }
 }

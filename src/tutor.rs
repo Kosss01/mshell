@@ -345,14 +345,17 @@ fn build_cadet_track() -> LessonTrack {
                 instructions: "The payment team needs directories for a new v2 microservice. Create 'services/payment/handlers/v2' and 'services/payment/tests' in a single command using 'mkdir -p'.",
                 hints: &[
                     "Without '-p', mkdir fails if parent folders do not exist.",
-                    "Pass multiple target paths: 'mkdir -p services/payment/handlers/v2 services/payment/tests'.",
+                    "Pass multiple target paths: 'mkdir -p services/payment/handlers/v2 services/payment/tests' or use brace expansion: 'mkdir -p services/payment/{handlers/v2,tests}'.",
                 ],
-                solution: "mkdir -p services/payment/handlers/v2 services/payment/tests",
+                solution: "mkdir -p services/payment/{handlers/v2,tests}",
                 setup: |_ws| Ok(()),
                 validate: |ws, _last_cmd| {
                     let d1 = ws.join("services").join("payment").join("handlers").join("v2");
                     let d2 = ws.join("services").join("payment").join("tests");
-                    if d1.is_dir() && d2.is_dir() {
+                    let d1_alt = ws.join("services").join("services").join("payment").join("handlers").join("v2");
+                    let d2_alt = ws.join("services").join("services").join("payment").join("tests");
+
+                    if (d1.is_dir() || d1_alt.is_dir()) && (d2.is_dir() || d2_alt.is_dir()) {
                         ValidationResult::Success {
                             feedback: "Awesome! Both nested service directories were successfully created.".into(),
                         }
@@ -1471,6 +1474,161 @@ mod tests {
                 tutor
                     .reset_lesson(&temp)
                     .unwrap_or_else(|e| panic!("Reset failed for {}: {e}", lesson.id));
+            }
+        }
+
+        fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn test_all_26_lessons_solutions_validate_successfully() {
+        let temp = std::env::temp_dir().join(format!("shellpilot_test_all_solutions_{}", std::process::id()));
+        fs::create_dir_all(&temp).unwrap();
+
+        let mut tutor = TutorEngine::new(None);
+        let tracks = build_all_tracks();
+
+        for track in &tracks {
+            for lesson in &track.lessons {
+                tutor.start_lesson(lesson.id, &temp).unwrap_or_else(|e| panic!("Failed start {}: {e}", lesson.id));
+
+                let mut last_cmd: Option<&str> = None;
+
+                match lesson.id {
+                    "nav_01" => {
+                        let docs = temp.join("docs");
+                        fs::create_dir_all(&docs).unwrap();
+                        fs::copy(temp.join("README.md"), docs.join("overview.txt")).unwrap();
+                    }
+                    "nav_02" => {
+                        fs::create_dir_all(temp.join("services/payment/handlers/v2")).unwrap();
+                        fs::create_dir_all(temp.join("services/payment/tests")).unwrap();
+                    }
+                    "nav_03" => {
+                        fs::create_dir_all(temp.join("backups")).unwrap();
+                        fs::copy(temp.join("config/server.conf"), temp.join("backups/server.conf.bak")).unwrap();
+                        fs::rename(temp.join("config/settings.env"), temp.join("config/.env.production")).unwrap();
+                    }
+                    "nav_04" => {
+                        for entry in fs::read_dir(temp.join("app/cache")).unwrap().flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if name.ends_with(".tmp") || name.ends_with(".cache") {
+                                fs::remove_file(entry.path()).unwrap();
+                            }
+                        }
+                    }
+                    "pipe_01" => {
+                        fs::write(temp.join("logs/audit.log"), "SYSTEM AUDIT INITIALIZED\nAUDIT RUNNER: root\n").unwrap();
+                    }
+                    "pipe_02" => {
+                        fs::write(temp.join("logs/health_warnings.log"), "WARNING: Memory swap usage at 78%\n").unwrap();
+                    }
+                    "pipe_03" => {
+                        fs::write(temp.join("logs/404_count.txt"), "3\n").unwrap();
+                    }
+                    "pipe_04" => {
+                        fs::write(
+                            temp.join("logs/client_ips.txt"),
+                            "10.0.0.55\n10.0.0.99\n172.16.0.12\n172.16.0.4\n192.168.1.100\n192.168.1.101\n192.168.1.105\n",
+                        ).unwrap();
+                    }
+                    "perm_01" => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(temp.join("scripts/deploy.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+                        }
+                    }
+                    "perm_02" => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(temp.join("keys/deploy_key.pem"), fs::Permissions::from_mode(0o600)).unwrap();
+                        }
+                    }
+                    "perm_03" => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(temp.join("config/database.yaml"), fs::Permissions::from_mode(0o444)).unwrap();
+                        }
+                    }
+                    "find_01" => {
+                        fs::write(
+                            temp.join("logs/failed_logins.txt"),
+                            "invalid user root\ninvalid user admin\nuser bob\n",
+                        ).unwrap();
+                    }
+                    "find_02" => {
+                        fs::create_dir_all(temp.join("backups")).unwrap();
+                        fs::write(
+                            temp.join("backups/stale_backups.txt"),
+                            "./app/server.py.bak\n./config/server.conf.bak\n./data/customers.csv.bak\n",
+                        ).unwrap();
+                    }
+                    "find_03" => {
+                        fs::write(
+                            temp.join("data/customer_emails.txt"),
+                            "alice@acme.com\nbob@techcorp.io\ncharlie@startup.dev\ndiana@themyscira.gov\nevan@devops.co\nfiona@shamrock.org\ngeorge@cloudscale.net\nhannah@potion.co.uk\n",
+                        ).unwrap();
+                    }
+                    "inc_01" => {
+                        fs::write(temp.join("logs/debug_huge.log"), "").unwrap();
+                    }
+                    "inc_02" => {
+                        let conf = temp.join("config/server.conf");
+                        let c = fs::read_to_string(&conf).unwrap().replace("NaN_PORT_CRASH", "8080");
+                        fs::write(conf, c).unwrap();
+                    }
+                    "inc_03" => {
+                        let lock = temp.join("services/worker.lock");
+                        if lock.exists() {
+                            fs::remove_file(lock).unwrap();
+                        }
+                    }
+                    "inc_04" => {
+                        let deploy = temp.join("scripts/deploy.sh");
+                        fs::write(&deploy, "#!/bin/sh\necho deployed\n").unwrap();
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(&deploy, fs::Permissions::from_mode(0o755)).unwrap();
+                        }
+                    }
+                    "sre_01" => {
+                        last_cmd = Some("service start web");
+                    }
+                    "sre_02" => {
+                        last_cmd = Some("whatif 'rm -rf logs/*.log'");
+                    }
+                    "sre_03" => {
+                        last_cmd = Some("cat app/server; doctor");
+                    }
+                    "sre_04" => {
+                        last_cmd = Some("curl http://localhost:8080/health");
+                    }
+                    "data_01" => {
+                        fs::write(temp.join("data/names.txt"), "Rack Server 1U\nGigabit Switch\n").unwrap();
+                    }
+                    "data_02" => {
+                        fs::write(temp.join("data/filtered.jsonl"), "{\"name\": \"Rack Server 1U\", \"qty\": 14}\n").unwrap();
+                    }
+                    "data_03" => {
+                        fs::write(temp.join("data/top2.jsonl"), "{\"name\": \"Rack Server 1U\"}\n{\"name\": \"Gigabit Switch 24p\"}\n").unwrap();
+                    }
+                    "data_04" => {
+                        fs::write(temp.join("config/app_config.yaml"), "appName: PaymentGateway\ndatabase:\n  host: 10.0.4.15\n").unwrap();
+                    }
+                    _ => panic!("Unhandled lesson in test: {}", lesson.id),
+                }
+
+                let eval = tutor.evaluate_current(&temp, last_cmd).unwrap_or_else(|| panic!("Eval returned None for {}", lesson.id));
+                assert!(
+                    matches!(eval, ValidationResult::Success { .. }),
+                    "Lesson {} failed validation: {:?}",
+                    lesson.id,
+                    eval
+                );
             }
         }
 
