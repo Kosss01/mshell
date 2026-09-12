@@ -188,12 +188,14 @@ The Flight Academy provides a structured 7-track curriculum with 26 hands-on les
 
 ```bash
 tutor list                 # View curriculum tracks and completion progress
-tutor start <lesson_id>    # Begin a lesson (e.g. 'tutor start nav_01')
+tutor <lesson_id>          # Jump directly to a lesson (e.g. 'tutor nav_02')
+tutor start <lesson_id>    # Begin a specific lesson (alias: 'tutor goto/jump <id>')
 tutor check                # Validate if the mission objective has been satisfied
 tutor hint                 # Request progressive pedagogical hints
 tutor solution             # Reveal reference command and explanation
 tutor reset                # Re-stage initial challenge environment
-tutor next                 # Advance to the next lesson in the track
+tutor next                 # Advance to the next lesson in the curriculum
+tutor prev                 # Return to the previous lesson (alias: 'tutor back')
 ```
 
 ### Curriculum Tracks
@@ -476,7 +478,7 @@ timeline 10          # Show last 10 commands with timestamps and exit codes
 | Command | Category | Description |
 | :--- | :--- | :--- |
 | `tour` / `explore` | Cockpit | Launch guided walkthrough of flight simulator features. |
-| `tutor` | Academy | Interactive 7-track Linux and shell training academy (`list`, `start`, `check`, `hint`, `solution`, `next`). |
+| `tutor` | Academy | Interactive 7-track Linux and shell training academy (`list`, `start`, `check`, `hint`, `solution`, `next`, `prev`, `<id>`). |
 | `drill` | SRE Chaos | Production outage incident drills (`list`, `start`, `check`, `hint`, `abandon`). |
 | `cadet` / `profile` | Progression | View cadet rank, XP breakdown, stats, and unlockable achievement badges. |
 | `whatif <cmd>` | Safety | Dry-run preview of command effects, file deletions, and blast radius. |

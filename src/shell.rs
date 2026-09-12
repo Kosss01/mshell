@@ -1229,7 +1229,49 @@ fn complete_line(
             flag_comps.into_iter().map(|c| c.flag).collect()
         }
     } else {
-        path_candidates(prefix)
+        let line_prefix = line[..start].trim();
+        if line_prefix == "tutor" || line_prefix == "tutor start" || line_prefix == "tutor goto" || line_prefix == "tutor jump" {
+            let mut tutor_opts = vec![
+                "start", "next", "prev", "back", "check", "hint", "solution", "reset", "list", "exit",
+            ];
+            let lesson_ids = [
+                "nav_01", "nav_02", "nav_03", "nav_04",
+                "pipe_01", "pipe_02", "pipe_03", "pipe_04",
+                "perm_01", "perm_02", "perm_03",
+                "find_01", "find_02", "find_03",
+                "inc_01", "inc_02", "inc_03", "inc_04",
+                "sre_01", "sre_02", "sre_03", "sre_04",
+                "data_01", "data_02", "data_03", "data_04",
+            ];
+            tutor_opts.extend_from_slice(&lesson_ids);
+            let matches: Vec<String> = tutor_opts
+                .into_iter()
+                .filter(|opt| opt.starts_with(prefix))
+                .map(|s| s.to_string())
+                .collect();
+            if !matches.is_empty() {
+                matches
+            } else {
+                path_candidates(prefix)
+            }
+        } else if line_prefix == "drill" || line_prefix == "drill start" {
+            let drill_opts = [
+                "start", "check", "hint", "abandon", "list",
+                "drill-disk", "drill-service", "drill-lock", "drill-perm", "drill-cert", "drill-dos", "drill-db",
+            ];
+            let matches: Vec<String> = drill_opts
+                .into_iter()
+                .filter(|opt| opt.starts_with(prefix))
+                .map(|s| s.to_string())
+                .collect();
+            if !matches.is_empty() {
+                matches
+            } else {
+                path_candidates(prefix)
+            }
+        } else {
+            path_candidates(prefix)
+        }
     };
 
     match candidates.as_slice() {
@@ -1986,5 +2028,30 @@ mod tests {
         assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "--version".to_string()]), 0);
         assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "-v".to_string()]), 0);
         assert_eq!(shell.run_with_args(&["shellpilot".to_string(), "-V".to_string()]), 0);
+    }
+
+    #[test]
+    fn test_tutor_and_drill_tab_completion() {
+        let extractor = crate::completions::HelpCompletionExtractor::new();
+
+        let mut line1 = "tutor pre".to_string();
+        complete_line(&mut line1, &extractor, None);
+        assert_eq!(line1, "tutor prev");
+
+        let mut line2 = "tutor bac".to_string();
+        complete_line(&mut line2, &extractor, None);
+        assert_eq!(line2, "tutor back");
+
+        let mut line3 = "tutor nav_02".to_string();
+        complete_line(&mut line3, &extractor, None);
+        assert_eq!(line3, "tutor nav_02");
+
+        let mut line4 = "tutor start pipe_03".to_string();
+        complete_line(&mut line4, &extractor, None);
+        assert_eq!(line4, "tutor start pipe_03");
+
+        let mut line5 = "drill drill-dis".to_string();
+        complete_line(&mut line5, &extractor, None);
+        assert_eq!(line5, "drill drill-disk");
     }
 }

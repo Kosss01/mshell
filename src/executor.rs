@@ -659,38 +659,56 @@ impl Executor {
             return ExecutionResult::Builtin;
         }
 
-        match args[0].as_str() {
-            "start" => {
-                if args.len() < 2 {
-                    eprintln!("tutor: start requires a lesson ID (e.g. 'tutor start nav_01')");
-                    return ExecutionResult::BuiltinStatus(1);
-                }
-                let ws = match self.ensure_sandbox() {
-                    Ok(w) => w,
-                    Err(e) => {
-                        eprintln!("tutor: {e}");
-                        return ExecutionResult::Failed;
-                    }
-                };
-                if self.interactive.get() {
-                    let _ = std::env::set_current_dir(&ws);
-                }
-                let res = {
-                    let mut tutor = self.tutor.borrow_mut();
-                    tutor.as_mut().unwrap().start_lesson(&args[1], &ws)
-                };
-                match res {
-                    Ok(briefing) => {
-                        println!("{briefing}");
-                        crate::shell::set_prompt_prefix(Some(format!("shellpilot:tutor 🎓 {}", args[1])));
-                        ExecutionResult::Builtin
-                    }
-                    Err(err) => {
-                        eprintln!("tutor: {err}");
-                        ExecutionResult::Failed
-                    }
-                }
+        let first = args[0].as_str();
+
+        // Check for direct jump: "tutor nav_02", "tutor start nav_02", "tutor goto nav_02", "tutor jump nav_02"
+        let target_lesson_id = if first == "start" || first == "goto" || first == "jump" {
+            if args.len() < 2 {
+                eprintln!("tutor: {first} requires a lesson ID (e.g. 'tutor {first} nav_02')");
+                return ExecutionResult::BuiltinStatus(1);
             }
+            Some(args[1].clone())
+        } else {
+            let is_known = {
+                let tutor = self.tutor.borrow();
+                tutor.as_ref().map(|t| t.has_lesson(first)).unwrap_or(false)
+            };
+            if is_known {
+                Some(first.to_string())
+            } else {
+                None
+            }
+        };
+
+        if let Some(lesson_id) = target_lesson_id {
+            let ws = match self.ensure_sandbox() {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("tutor: {e}");
+                    return ExecutionResult::Failed;
+                }
+            };
+            if self.interactive.get() {
+                let _ = std::env::set_current_dir(&ws);
+            }
+            let res = {
+                let mut tutor = self.tutor.borrow_mut();
+                tutor.as_mut().unwrap().start_lesson(&lesson_id, &ws)
+            };
+            return match res {
+                Ok(briefing) => {
+                    println!("{briefing}");
+                    crate::shell::set_prompt_prefix(Some(format!("shellpilot:tutor 🎓 {lesson_id}")));
+                    ExecutionResult::Builtin
+                }
+                Err(err) => {
+                    eprintln!("tutor: {err}");
+                    ExecutionResult::Failed
+                }
+            };
+        }
+
+        match first {
             "check" => {
                 let ws = self.current_workspace();
                 let last_non_tutor = {
@@ -708,7 +726,7 @@ impl Executor {
                 match eval {
                     Some(crate::tutor::ValidationResult::Success { feedback }) => {
                         println!("\n🎉 [OBJECTIVE COMPLETE!] {feedback}");
-                        println!("   Type 'tutor next' to advance to the next challenge!\n");
+                        println!("   Type 'tutor next' to advance (or 'tutor prev' / 'tutor <id>' to navigate)!\n");
                         let active_id = {
                             let tutor = self.tutor.borrow();
                             tutor.as_ref().unwrap().active_lesson_id.clone()
@@ -802,6 +820,32 @@ impl Executor {
                     }
                 }
             }
+            "prev" | "previous" | "back" => {
+                let ws = self.current_workspace();
+                if self.interactive.get() {
+                    let _ = std::env::set_current_dir(&ws);
+                }
+                let (res, active_id) = {
+                    let mut tutor = self.tutor.borrow_mut();
+                    let t = tutor.as_mut().unwrap();
+                    let r = t.retreat_to_prev(&ws);
+                    let active_id = t.active_lesson_id.clone();
+                    (r, active_id)
+                };
+                match res {
+                    Ok(msg) => {
+                        println!("{msg}");
+                        if let Some(id) = active_id {
+                            crate::shell::set_prompt_prefix(Some(format!("shellpilot:tutor 🎓 {id}")));
+                        }
+                        ExecutionResult::Builtin
+                    }
+                    Err(err) => {
+                        eprintln!("tutor: {err}");
+                        ExecutionResult::Failed
+                    }
+                }
+            }
             "exit" => {
                 let ws = self.current_workspace();
                 if self.interactive.get() {
@@ -816,7 +860,7 @@ impl Executor {
                 ExecutionResult::Builtin
             }
             unknown => {
-                eprintln!("tutor: unknown subcommand '{unknown}'. Usage: tutor [start|check|hint|solution|reset|next|list|exit]");
+                eprintln!("tutor: unknown subcommand or lesson '{unknown}'. Usage: tutor [start|next|prev|check|hint|solution|reset|list|exit|<lesson_id>]");
                 ExecutionResult::BuiltinStatus(1)
             }
         }
@@ -3127,7 +3171,7 @@ fn show_help(args: &[String]) -> ExecutionResult {
     println!("  connections               list established TCP connections");
     println!("  children [PID]            list child processes");
     println!("  json | yaml | toml VALUE  validate and format data");
-    println!("  tutor [start|check|hint|solution|reset|next] interactive academy");
+    println!("  tutor [next|prev|check|hint|solution|<id>] interactive academy");
     println!("  whatif COMMAND...         dry-run preview of command effects");
     println!("  undo [diff]               revert workspace or preview changes");
     println!("  snapshot [NAME]           save named sandbox checkpoint");
@@ -4997,11 +5041,43 @@ mod tests {
             Some("nav_03")
         );
 
-        // 11. tutor reset
+        // 11. tutor prev retreats back to nav_02
+        let ast_prev = crate::parser::parse_ast("tutor prev", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_prev).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_02")
+        );
+
+        // 12. tutor back retreats back to nav_01
+        let ast_back = crate::parser::parse_ast("tutor back", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_back).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_01")
+        );
+
+        // 13. Direct jump: tutor nav_02 starts nav_02 directly
+        let ast_direct = crate::parser::parse_ast("tutor nav_02", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_direct).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_02")
+        );
+
+        // 14. tutor goto nav_03
+        let ast_goto = crate::parser::parse_ast("tutor goto nav_03", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_goto).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_03")
+        );
+
+        // 15. tutor reset
         let ast_reset = crate::parser::parse_ast("tutor reset", 0).unwrap().unwrap();
         assert_eq!(executor.execute_ast(&ast_reset).status_code(), 0);
 
-        // 12. tutor exit
+        // 16. tutor exit
         let ast_exit = crate::parser::parse_ast("tutor exit", 0).unwrap().unwrap();
         assert_eq!(executor.execute_ast(&ast_exit).status_code(), 0);
         assert!(executor.tutor.borrow().as_ref().unwrap().active_lesson_id.is_none());

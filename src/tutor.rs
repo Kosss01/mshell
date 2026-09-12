@@ -130,12 +130,12 @@ impl TutorEngine {
         }
 
         out.push_str("💡 Commands:\n");
-        out.push_str("   tutor start <lesson_id>   Begin a specific lesson (e.g. 'tutor start nav_01')\n");
+        out.push_str("   tutor <lesson_id>         Jump directly to a lesson (e.g. 'tutor nav_02')\n");
+        out.push_str("   tutor next / prev         Advance to next or return to previous lesson\n");
         out.push_str("   tutor check               Evaluate whether current challenge is complete\n");
-        out.push_str("   tutor hint                Get a helpful hint if stuck\n");
+        out.push_str("   tutor hint                Get a progressive hint if stuck\n");
         out.push_str("   tutor solution            Reveal the reference solution and explanation\n");
         out.push_str("   tutor reset               Reset workspace to initial challenge state\n");
-        out.push_str("   tutor next                Advance to the next challenge\n");
 
         out
     }
@@ -248,6 +248,10 @@ impl TutorEngine {
         self.start_lesson(&lesson_id, workspace)
     }
 
+    pub fn has_lesson(&self, id: &str) -> bool {
+        find_lesson_in_tracks(&self.tracks, id).is_some()
+    }
+
     pub fn advance_to_next(&mut self, workspace: &Path) -> io::Result<String> {
         let current_id = match self.active_lesson_id.as_ref() {
             Some(id) => id.clone(),
@@ -269,6 +273,33 @@ impl TutorEngine {
                 self.start_lesson(next_id, workspace)
             }
             _ => Ok("🏆 Congratulations! You have completed all lessons in the Academy!".to_string()),
+        }
+    }
+
+    pub fn retreat_to_prev(&mut self, workspace: &Path) -> io::Result<String> {
+        let current_id = match self.active_lesson_id.as_ref() {
+            Some(id) => id.clone(),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "No active lesson. Choose one from 'tutor list'.",
+                ));
+            }
+        };
+
+        let all_lessons: Vec<&Lesson> = self.tracks.iter().flat_map(|t| &t.lessons).collect();
+        let current_index = all_lessons.iter().position(|l| l.id == current_id);
+
+        match current_index {
+            Some(idx) if idx > 0 => {
+                let prev_id = all_lessons[idx - 1].id;
+                self.start_lesson(prev_id, workspace)
+            }
+            Some(_) => Ok("⏮️ You are already at the very first lesson (nav_01).".to_string()),
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Active lesson not found in curriculum.",
+            )),
         }
     }
 
@@ -1669,6 +1700,47 @@ mod tests {
                 );
             }
         }
+
+        fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn tutor_navigation_forward_and_backward() {
+        let temp = std::env::temp_dir().join(format!("shellpilot_test_nav_fb_{}", std::process::id()));
+        fs::create_dir_all(&temp).unwrap();
+
+        let mut tutor = TutorEngine::new(None);
+        assert!(tutor.has_lesson("nav_01"));
+        assert!(tutor.has_lesson("nav_02"));
+        assert!(tutor.has_lesson("data_04"));
+        assert!(!tutor.has_lesson("non_existent_lesson"));
+
+        // Start at nav_01
+        tutor.start_lesson("nav_01", &temp).unwrap();
+        assert_eq!(tutor.active_lesson_id.as_deref(), Some("nav_01"));
+
+        // retreat_to_prev when on nav_01 warns already at first
+        let prev_msg = tutor.retreat_to_prev(&temp).unwrap();
+        assert!(prev_msg.contains("already at the very first lesson"));
+        assert_eq!(tutor.active_lesson_id.as_deref(), Some("nav_01"));
+
+        // Advance to nav_02
+        tutor.advance_to_next(&temp).unwrap();
+        assert_eq!(tutor.active_lesson_id.as_deref(), Some("nav_02"));
+
+        // Advance to nav_03
+        tutor.advance_to_next(&temp).unwrap();
+        assert_eq!(tutor.active_lesson_id.as_deref(), Some("nav_03"));
+
+        // Retreat back to nav_02
+        let back_msg = tutor.retreat_to_prev(&temp).unwrap();
+        assert!(back_msg.contains("Lesson nav_02"));
+        assert_eq!(tutor.active_lesson_id.as_deref(), Some("nav_02"));
+
+        // Retreat back to nav_01
+        let back_msg2 = tutor.retreat_to_prev(&temp).unwrap();
+        assert!(back_msg2.contains("Lesson nav_01"));
+        assert_eq!(tutor.active_lesson_id.as_deref(), Some("nav_01"));
 
         fs::remove_dir_all(&temp).ok();
     }
