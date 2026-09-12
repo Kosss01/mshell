@@ -50,6 +50,12 @@ pub struct Shell {
     completion_extractor: crate::completions::HelpCompletionExtractor,
 }
 
+impl Default for Shell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Shell {
     pub fn new() -> Self {
         Self {
@@ -75,48 +81,145 @@ impl Shell {
     }
 
     pub fn run_with_args(&mut self, args: &[String]) -> i32 {
-        if args.len() > 1 {
-            if args[1] == "-c" {
-                if args.len() < 3 {
-                    eprintln!("mshell: -c: option requires an argument");
+        let mut is_tutor = false;
+        let mut is_sandbox = false;
+        let mut is_plain = false;
+        let mut c_opt = None;
+        let mut script_opt = None;
+
+        let mut i = 1;
+        while i < args.len() {
+            if args[i] == "--tutor" {
+                is_tutor = true;
+                i += 1;
+            } else if args[i] == "--sandbox" {
+                is_sandbox = true;
+                i += 1;
+            } else if args[i] == "--plain" || args[i] == "--no-tutor" {
+                is_plain = true;
+                i += 1;
+            } else if args[i] == "-c" {
+                if i + 1 >= args.len() {
+                    eprintln!("shellpilot: -c: option requires an argument");
                     return 2;
                 }
-                let mut params = Vec::new();
-                if args.len() >= 4 {
-                    params.push(args[3].clone());
-                    params.extend_from_slice(&args[4..]);
-                } else if !args.is_empty() {
-                    params.push(args[0].clone());
+                c_opt = Some(i + 1);
+                break;
+            } else if args[i] == "--" {
+                if i + 1 < args.len() {
+                    script_opt = Some(i + 1);
                 }
-                parser::set_positional_params(params);
-                return self.execute_string(&args[2]);
-            }
-
-            let script_idx = if args[1] == "--" {
-                if args.len() > 2 {
-                    Some(2)
-                } else {
-                    None
-                }
-            } else if !args[1].starts_with('-') {
-                Some(1)
+                break;
+            } else if !args[i].starts_with('-') {
+                script_opt = Some(i);
+                break;
             } else {
-                None
-            };
-
-            if let Some(idx) = script_idx {
-                let script_path = &args[idx];
-                let mut params = vec![script_path.clone()];
-                params.extend_from_slice(&args[idx + 1..]);
-                parser::set_positional_params(params);
-                return self.execute_script(script_path);
+                eprintln!("shellpilot: unrecognized option: {}", args[i]);
+                return 2;
             }
+        }
+
+        let is_interactive = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
+
+        // By default in interactive mode (e.g. cargo run), launch directly into Flight Simulator Tutor
+        if is_interactive && c_opt.is_none() && script_opt.is_none() && !is_plain && !is_sandbox {
+            is_tutor = true;
+        }
+
+        if is_tutor || is_sandbox {
+            self.executor.set_interactive(true);
+            if is_tutor {
+                self.executor.ensure_tutor();
+            }
+            match self.executor.ensure_sandbox() {
+                Ok(ws) => {
+                    let _ = std::env::set_current_dir(&ws);
+                    if is_interactive && c_opt.is_none() && script_opt.is_none() {
+                        if is_tutor {
+                            let target_lesson = {
+                                let t = self.executor.tutor.borrow();
+                                let tutor = t.as_ref().unwrap();
+                                tutor
+                                    .first_incomplete_lesson()
+                                    .map(|l| l.id)
+                                    .unwrap_or("nav_01")
+                                    .to_string()
+                            };
+
+                            println!("\x1b[1;36m╔══════════════════════════════════════════════════════════════════════════╗\x1b[0m");
+                            println!("\x1b[1;36m║            ✈️   SHELLPILOT COMMAND LINE FLIGHT SIMULATOR                 ║\x1b[0m");
+                            println!("\x1b[1;36m║                   Interactive Academy & Safety Sandbox                   ║\x1b[0m");
+                            println!("\x1b[1;36m╚══════════════════════════════════════════════════════════════════════════╝\x1b[0m\n");
+
+                            println!("👋 \x1b[1;32mWelcome, Cadet!\x1b[0m You are in a safe, isolated virtual server sandbox:");
+                            println!("   • \x1b[1;34mEnvironment\x1b[0m : ~/lab (pre-loaded with app/, config/, logs/, data/, scripts/)");
+                            println!("   • \x1b[1;34mSafety Net \x1b[0m : Commands are jailed and cannot harm your host system");
+                            println!("   • \x1b[1;34mTime-Travel\x1b[0m : Type '\x1b[1;33mundo\x1b[0m' (or '\x1b[1;33mundo diff\x1b[0m'), or '\x1b[1;33mwhatif <cmd>\x1b[0m' to preview");
+                            println!("   • \x1b[1;34mToolbox    \x1b[0m : '\x1b[1;33mtree\x1b[0m' for folder map, '\x1b[1;33mcheat <tool>\x1b[0m' for cheatsheets, '\x1b[1;33mdoctor\x1b[0m' for fixes");
+                            println!("   • \x1b[1;34mOperations \x1b[0m : '\x1b[1;33mservice\x1b[0m' (start/status), '\x1b[1;33mcurl\x1b[0m' APIs, '\x1b[1;33mdrill\x1b[0m' outages, '\x1b[1;33mcadet\x1b[0m' dossier\n");
+
+                            println!("📋 \x1b[1;35mGetting Started:\x1b[0m");
+                            println!("   1. Read the \x1b[1mMission Objective\x1b[0m below and type your command at the prompt.");
+                            println!("   2. Your solution is \x1b[1mauto-validated\x1b[0m immediately upon execution.");
+                            println!("   3. Need help? Type '\x1b[1;33mtutor hint\x1b[0m' for hints or '\x1b[1;33mtutor solution\x1b[0m' for answers.");
+                            println!("   4. Type '\x1b[1;33mtutor\x1b[0m' to see all 7 tracks & 26 challenges, or '\x1b[1;33mtutor next\x1b[0m' to advance.\n");
+
+                            let briefing = {
+                                let mut tutor = self.executor.tutor.borrow_mut();
+                                tutor
+                                    .as_mut()
+                                    .unwrap()
+                                    .start_lesson(&target_lesson, &ws)
+                                    .unwrap_or_default()
+                            };
+                            println!("{briefing}");
+                            set_prompt_prefix(Some(format!("shellpilot:tutor 🎓 {target_lesson}")));
+                        } else {
+                            println!("\n🛡️  [SHELLPILOT FLIGHT SIMULATOR: SANDBOX ACTIVE]");
+                            println!("   Confinement root: {}", ws.display());
+                            println!("   All commands are safely isolated. Try 'undo' or 'whatif <cmd>'.\n");
+                            println!("📁 A realistic virtual server environment is ready in ~/lab:");
+                            println!("   • app/     : Python service, config.json, HTML templates");
+                            println!("   • config/  : server.conf, database.yaml, settings.env");
+                            println!("   • logs/    : access.log, error.log, auth.log");
+                            println!("   • data/    : customers.csv, inventory.jsonl");
+                            println!("   • scripts/ : deploy.sh, backup.sh, healthcheck.sh\n");
+                            println!("💡 Try: 'ls -la', 'cat config/server.conf', 'grep ERROR logs/error.log'\n");
+                            set_prompt_prefix(Some("shellpilot:sandbox 🛡️".into()));
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("shellpilot: failed to initialize sandbox: {err}");
+                    return 1;
+                }
+            }
+        }
+
+        if let Some(cmd_idx) = c_opt {
+            let mut params = Vec::new();
+            if cmd_idx + 1 < args.len() {
+                params.push(args[cmd_idx + 1].clone());
+                params.extend_from_slice(&args[cmd_idx + 2..]);
+            } else if !args.is_empty() {
+                params.push(args[0].clone());
+            }
+            parser::set_positional_params(params);
+            return self.execute_string(&args[cmd_idx]);
+        }
+
+        if let Some(idx) = script_opt {
+            let script_path = &args[idx];
+            let mut params = vec![script_path.clone()];
+            params.extend_from_slice(&args[idx + 1..]);
+            parser::set_positional_params(params);
+            return self.execute_script(script_path);
         }
 
         let prog_name = args
             .first()
             .cloned()
-            .unwrap_or_else(|| "mshell".to_string());
+            .unwrap_or_else(|| "shellpilot".to_string());
         parser::set_positional_params(vec![prog_name]);
 
         if unsafe { libc::isatty(libc::STDIN_FILENO) == 1 } {
@@ -131,7 +234,7 @@ impl Shell {
             Ok(Some(ast)) => ast,
             Ok(None) => return self.last_status,
             Err(error) => {
-                eprintln!("mshell: {error}");
+                eprintln!("shellpilot: {error}");
                 self.last_status = 2;
                 return 2;
             }
@@ -146,7 +249,7 @@ impl Shell {
         let content = match fs::read_to_string(script_path) {
             Ok(content) => content,
             Err(error) => {
-                eprintln!("mshell: {script_path}: {error}");
+                eprintln!("shellpilot: {script_path}: {error}");
                 return 127;
             }
         };
@@ -158,7 +261,7 @@ impl Shell {
         match io::stdin().read_to_string(&mut buffer) {
             Ok(_) => self.execute_string(&buffer),
             Err(error) => {
-                eprintln!("mshell: failed to read stdin: {error}");
+                eprintln!("shellpilot: failed to read stdin: {error}");
                 1
             }
         }
@@ -166,7 +269,7 @@ impl Shell {
 
     pub fn run_interactive(&mut self) -> i32 {
         self.executor.set_interactive(true);
-        println!("\x1b[1;36m✦ mshell Safe Shell v0.1.0\x1b[0m (type \x1b[1;33mhelp\x1b[0m for builtins, \x1b[1;33mexit\x1b[0m to quit)");
+        println!("\x1b[1;36m✈️  ShellPilot Command Line Flight Simulator v0.1.0\x1b[0m (type \x1b[1;33mhelp\x1b[0m for builtins, \x1b[1;33mexit\x1b[0m to quit)");
         loop {
             self.print_prompt();
 
@@ -185,15 +288,20 @@ impl Shell {
                 Ok(Some(ast)) => ast,
                 Ok(None) => continue,
                 Err(error) => {
-                    eprintln!("mshell: {error}");
+                    eprintln!("shellpilot: {error}");
                     self.last_status = 2;
                     continue;
                 }
             };
 
+            let lint_warnings = crate::linter::check_ast(&ast);
+            for w in lint_warnings {
+                println!("{}", w.format());
+            }
+
             let effects = crate::effects::analyze_ast(&ast);
             if crate::policy::evaluate(&effects) == crate::policy::PolicyDecision::Block {
-                eprintln!("mshell: 🛑 Command blocked by safety policy");
+                eprintln!("shellpilot: 🛑 Command blocked by safety policy");
                 for effect in &effects {
                     eprintln!("- {effect:?}");
                 }
@@ -201,8 +309,90 @@ impl Shell {
                 continue;
             }
 
+            // Sandbox path confinement and pre-command snapshot
+            let mut path_blocked = false;
+            if let Some(ref mut sb) = *self.executor.sandbox.borrow_mut() {
+                for effect in &effects {
+                    match effect {
+                        crate::effects::Effect::FilesystemWrite(p) | crate::effects::Effect::FilesystemDelete(p)
+                            if !sb.is_path_jailed(std::path::Path::new(p), true) => {
+                                eprintln!("shellpilot: 🛡️ Sandbox Guard: Prevented modification to external path '{p}'.");
+                                path_blocked = true;
+                                break;
+                            }
+                        _ => {}
+                    }
+                }
+
+                if !path_blocked {
+                    let modifies = effects.iter().any(|e| {
+                        matches!(
+                            e,
+                            crate::effects::Effect::FilesystemDelete(_)
+                                | crate::effects::Effect::FilesystemWrite(_)
+                        )
+                    });
+                    if modifies {
+                        sb.pre_command_snapshot(&final_input).ok();
+                    }
+                }
+            }
+
+            if path_blocked {
+                self.last_status = 1;
+                continue;
+            }
+
             let result = self.executor.execute_ast(&ast);
             self.last_status = result.status_code();
+
+            self.executor.record_cadet_command();
+
+            if self.last_status != 0 {
+                *self.executor.last_failed_cmd.borrow_mut() = Some((final_input.clone(), self.last_status));
+                if self
+                    .executor
+                    .tutor
+                    .borrow()
+                    .as_ref()
+                    .map(|t| t.active_lesson_id.is_some())
+                    .unwrap_or(false)
+                {
+                    let ws = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    if let Some(hint) = crate::guidance::suggest_inline_hint(&final_input, self.last_status, &ws) {
+                        println!("{hint}");
+                    }
+                }
+            } else {
+                *self.executor.last_failed_cmd.borrow_mut() = None;
+            }
+
+            // Tutor auto-evaluation hook
+            let completed_lesson = {
+                let tutor_borrow = self.executor.tutor.borrow();
+                if let Some(ref tutor) = *tutor_borrow {
+                    if tutor.active_lesson_id.is_some() {
+                        let ws = self.executor.current_workspace();
+                        if let Some(crate::tutor::ValidationResult::Success { feedback }) =
+                            tutor.evaluate_current(&ws, Some(&final_input))
+                        {
+                            println!("\n🎉 [OBJECTIVE COMPLETE!] {feedback}");
+                            println!("   Type 'tutor next' to advance to the next challenge!\n");
+                            tutor.active_lesson_id.clone()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some(id) = completed_lesson {
+                self.executor.mark_tutor_lesson_completed(&id);
+            }
 
             if matches!(result, ExecutionResult::Exit(_)) {
                 break;
@@ -221,12 +411,13 @@ impl Shell {
         let _raw_mode = match RawMode::enable() {
             Ok(mode) => mode,
             Err(error) => {
-                eprintln!("mshell: failed to enable line editing: {error}");
+                eprintln!("shellpilot: failed to enable line editing: {error}");
                 return None;
             }
         };
 
         let mut line = String::new();
+        let mut cursor_pos = 0;
         let mut history_index = self.executor.history().len();
         let mut history_line = String::new();
         let mut suggestion = String::new();
@@ -249,27 +440,97 @@ impl Shell {
                     println!("^C");
                     return Some(String::new());
                 }
-                '\u{4}' if line.is_empty() => return None,
+                '\u{4}' => {
+                    if line.is_empty() {
+                        return None;
+                    }
+                    if cursor_pos < line.chars().count() {
+                        remove_char_at(&mut line, cursor_pos);
+                        if cursor_pos == line.chars().count() {
+                            suggestion = autosuggestion(&line, &self.executor.history());
+                        } else {
+                            suggestion.clear();
+                        }
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                    }
+                }
+                '\u{1}' => {
+                    cursor_pos = 0;
+                    suggestion.clear();
+                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                }
+                '\u{5}' => {
+                    cursor_pos = line.chars().count();
+                    suggestion = autosuggestion(&line, &self.executor.history());
+                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                }
+                '\u{b}' => {
+                    let start_byte = char_to_byte_index(&line, cursor_pos);
+                    line.truncate(start_byte);
+                    suggestion = autosuggestion(&line, &self.executor.history());
+                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                }
+                '\u{15}' => {
+                    if cursor_pos > 0 {
+                        let end_byte = char_to_byte_index(&line, cursor_pos);
+                        line.drain(..end_byte);
+                        cursor_pos = 0;
+                        if cursor_pos == line.chars().count() {
+                            suggestion = autosuggestion(&line, &self.executor.history());
+                        } else {
+                            suggestion.clear();
+                        }
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                    }
+                }
+                '\u{17}' => {
+                    if cursor_pos > 0 {
+                        let prev_pos = prev_word_boundary(&line, cursor_pos);
+                        let start_byte = char_to_byte_index(&line, prev_pos);
+                        let end_byte = char_to_byte_index(&line, cursor_pos);
+                        line.drain(start_byte..end_byte);
+                        cursor_pos = prev_pos;
+                        if cursor_pos == line.chars().count() {
+                            suggestion = autosuggestion(&line, &self.executor.history());
+                        } else {
+                            suggestion.clear();
+                        }
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                    }
+                }
+                '\u{c}' => {
+                    print!("\x1b[2J\x1b[H");
+                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                }
                 '\u{12}' => {
                     if let Some(selected) = run_reverse_history_search(&mut stdin, &self.executor.history(), &line) {
                         line = selected;
+                        cursor_pos = line.chars().count();
                         suggestion.clear();
-                        redraw_line(&line);
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                     }
                 }
                 '\t' => {
                     if suggestion.is_empty() {
                         complete_line(&mut line, &self.completion_extractor, Some(&self.executor));
+                        cursor_pos = line.chars().count();
                     } else {
                         line.push_str(&suggestion);
+                        cursor_pos = line.chars().count();
                         suggestion.clear();
-                        redraw_line(&line);
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                     }
                 }
                 '\u{7f}' | '\u{8}' => {
-                    if line.pop().is_some() {
-                        suggestion.clear();
-                        redraw_line(&line);
+                    if cursor_pos > 0 {
+                        cursor_pos -= 1;
+                        remove_char_at(&mut line, cursor_pos);
+                        if cursor_pos == line.chars().count() {
+                            suggestion = autosuggestion(&line, &self.executor.history());
+                        } else {
+                            suggestion.clear();
+                        }
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                     }
                 }
                 '\u{1b}' => {
@@ -291,7 +552,8 @@ impl Shell {
                                     history_line = history[history_index].clone();
                                     line.clear();
                                     line.push_str(&history_line);
-                                    redraw_line(&line);
+                                    cursor_pos = line.chars().count();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                                 }
                             }
                             b'B' => {
@@ -302,18 +564,123 @@ impl Shell {
                                     history_line = history[history_index].clone();
                                     line.clear();
                                     line.push_str(&history_line);
-                                    redraw_line(&line);
+                                    cursor_pos = line.chars().count();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                                 } else if history_index < history.len() {
                                     history_index = history.len();
                                     history_line.clear();
                                     line.clear();
-                                    redraw_line(&line);
+                                    cursor_pos = 0;
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                                 }
                             }
-                            b'C' if !suggestion.is_empty() => {
-                                line.push_str(&suggestion);
+                            b'C' => {
+                                if cursor_pos < line.chars().count() {
+                                    cursor_pos += 1;
+                                    if cursor_pos == line.chars().count() {
+                                        suggestion = autosuggestion(&line, &self.executor.history());
+                                    } else {
+                                        suggestion.clear();
+                                    }
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                } else if !suggestion.is_empty() {
+                                    line.push_str(&suggestion);
+                                    cursor_pos = line.chars().count();
+                                    suggestion.clear();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'D' => {
+                                if cursor_pos > 0 {
+                                    cursor_pos -= 1;
+                                    suggestion.clear();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'H' => {
+                                cursor_pos = 0;
                                 suggestion.clear();
-                                redraw_line(&line);
+                                redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                            }
+                            b'F' => {
+                                cursor_pos = line.chars().count();
+                                suggestion = autosuggestion(&line, &self.executor.history());
+                                redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                            }
+                            b'3' => {
+                                let mut b3 = [0; 1];
+                                if stdin.read_exact(&mut b3).is_ok() && b3[0] == b'~' && cursor_pos < line.chars().count() {
+                                    remove_char_at(&mut line, cursor_pos);
+                                    if cursor_pos == line.chars().count() {
+                                        suggestion = autosuggestion(&line, &self.executor.history());
+                                    } else {
+                                        suggestion.clear();
+                                    }
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'1' => {
+                                let mut b3 = [0; 1];
+                                if stdin.read_exact(&mut b3).is_ok() {
+                                    if b3[0] == b'~' {
+                                        cursor_pos = 0;
+                                        suggestion.clear();
+                                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                    } else if b3[0] == b';' {
+                                        let mut b_mod_dir = [0; 2];
+                                        if stdin.read_exact(&mut b_mod_dir).is_ok() {
+                                            match b_mod_dir[1] {
+                                                b'D' => {
+                                                    cursor_pos = prev_word_boundary(&line, cursor_pos);
+                                                    suggestion.clear();
+                                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                                }
+                                                b'C' => {
+                                                    cursor_pos = next_word_boundary(&line, cursor_pos);
+                                                    if cursor_pos == line.chars().count() {
+                                                        suggestion = autosuggestion(&line, &self.executor.history());
+                                                    } else {
+                                                        suggestion.clear();
+                                                    }
+                                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            b'4' | b'8' => {
+                                let mut b3 = [0; 1];
+                                let _ = stdin.read_exact(&mut b3);
+                                cursor_pos = line.chars().count();
+                                suggestion = autosuggestion(&line, &self.executor.history());
+                                redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                            }
+                            b'7' => {
+                                let mut b3 = [0; 1];
+                                let _ = stdin.read_exact(&mut b3);
+                                cursor_pos = 0;
+                                suggestion.clear();
+                                redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                            }
+                            b'5' => {
+                                let mut b3 = [0; 1];
+                                if stdin.read_exact(&mut b3).is_ok() {
+                                    if b3[0] == b'D' {
+                                        cursor_pos = prev_word_boundary(&line, cursor_pos);
+                                        suggestion.clear();
+                                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                    } else if b3[0] == b'C' {
+                                        cursor_pos = next_word_boundary(&line, cursor_pos);
+                                        if cursor_pos == line.chars().count() {
+                                            suggestion = autosuggestion(&line, &self.executor.history());
+                                        } else {
+                                            suggestion.clear();
+                                        }
+                                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                    }
+                                }
                             }
                             b'2' => {
                                 let mut rest = [0; 3];
@@ -334,29 +701,236 @@ impl Shell {
                                     }
                                     let pasted_str = String::from_utf8_lossy(&pasted);
                                     let sanitized = sanitize_pasted_text(&pasted_str);
-                                    line.push_str(&sanitized);
-                                    suggestion = autosuggestion(&line, &self.executor.history());
-                                    redraw_line_with_suggestion(&line, &suggestion);
+                                    let pasted_count = sanitized.chars().count();
+                                    insert_str_at(&mut line, cursor_pos, &sanitized);
+                                    cursor_pos += pasted_count;
+                                    if cursor_pos == line.chars().count() {
+                                        suggestion = autosuggestion(&line, &self.executor.history());
+                                    } else {
+                                        suggestion.clear();
+                                    }
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                                 }
                             }
                             _ => {}
                         }
-                    }
+                    } else if b1[0] == b'O' {
+                        let mut b2 = [0; 1];
+                        if stdin.read_exact(&mut b2).is_err() {
+                            return None;
+                        }
+                        match b2[0] {
+                            b'A' => {
+                                suggestion.clear();
+                                let history = self.executor.history();
+                                if history_index > 0 {
+                                    history_index -= 1;
+                                    history_line = history[history_index].clone();
+                                    line.clear();
+                                    line.push_str(&history_line);
+                                    cursor_pos = line.chars().count();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'B' => {
+                                suggestion.clear();
+                                let history = self.executor.history();
+                                if history_index + 1 < history.len() {
+                                    history_index += 1;
+                                    history_line = history[history_index].clone();
+                                    line.clear();
+                                    line.push_str(&history_line);
+                                    cursor_pos = line.chars().count();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                } else if history_index < history.len() {
+                                    history_index = history.len();
+                                    history_line.clear();
+                                    line.clear();
+                                    cursor_pos = 0;
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'C' => {
+                                if cursor_pos < line.chars().count() {
+                                    cursor_pos += 1;
+                                    if cursor_pos == line.chars().count() {
+                                        suggestion = autosuggestion(&line, &self.executor.history());
+                                    } else {
+                                        suggestion.clear();
+                                    }
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                } else if !suggestion.is_empty() {
+                                    line.push_str(&suggestion);
+                                    cursor_pos = line.chars().count();
+                                    suggestion.clear();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'D' => {
+                                if cursor_pos > 0 {
+                                    cursor_pos -= 1;
+                                    suggestion.clear();
+                                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                                }
+                            }
+                            b'H' => {
+                                cursor_pos = 0;
+                                suggestion.clear();
+                                redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                            }
+                            b'F' => {
+                                cursor_pos = line.chars().count();
+                                suggestion = autosuggestion(&line, &self.executor.history());
+                                redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                            }
+                            _ => {}
+                        }
+                    } else if b1[0] == b'b' {
+                        cursor_pos = prev_word_boundary(&line, cursor_pos);
+                        suggestion.clear();
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                    } else if b1[0] == b'f' {
+                        cursor_pos = next_word_boundary(&line, cursor_pos);
+                        if cursor_pos == line.chars().count() {
+                            suggestion = autosuggestion(&line, &self.executor.history());
+                        } else {
+                            suggestion.clear();
+                        }
+                        redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                    } else if b1[0] == b'd' {
+                        let next_pos = next_word_boundary(&line, cursor_pos);
+                        if next_pos > cursor_pos {
+                            let start_byte = char_to_byte_index(&line, cursor_pos);
+                            let end_byte = char_to_byte_index(&line, next_pos);
+                            line.drain(start_byte..end_byte);
+                            if cursor_pos == line.chars().count() {
+                                suggestion = autosuggestion(&line, &self.executor.history());
+                            } else {
+                                suggestion.clear();
+                            }
+                            redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                        }
+                    } else if (b1[0] == 0x7f || b1[0] == 0x08)
+                        && cursor_pos > 0 {
+                            let prev_pos = prev_word_boundary(&line, cursor_pos);
+                            let start_byte = char_to_byte_index(&line, prev_pos);
+                            let end_byte = char_to_byte_index(&line, cursor_pos);
+                            line.drain(start_byte..end_byte);
+                            cursor_pos = prev_pos;
+                            if cursor_pos == line.chars().count() {
+                                suggestion = autosuggestion(&line, &self.executor.history());
+                            } else {
+                                suggestion.clear();
+                            }
+                            redraw_line_with_cursor(&line, &suggestion, cursor_pos);
+                        }
                 }
                 character => {
                     if character.is_control() && character != '\t' {
                         continue;
                     }
-                    line.push(character);
+                    insert_char_at(&mut line, cursor_pos, character);
+                    cursor_pos += 1;
                     if character == ' ' {
+                        let old_len = line.chars().count();
                         line = expand_abbreviations_in_line(&line, &self.executor.abbreviations());
+                        let new_len = line.chars().count();
+                        if new_len > old_len {
+                            cursor_pos += new_len - old_len;
+                        }
                     }
-                    suggestion = autosuggestion(&line, &self.executor.history());
-                    redraw_line_with_suggestion(&line, &suggestion);
+                    if cursor_pos == line.chars().count() {
+                        suggestion = autosuggestion(&line, &self.executor.history());
+                    } else {
+                        suggestion.clear();
+                    }
+                    redraw_line_with_cursor(&line, &suggestion, cursor_pos);
                 }
             }
         }
     }
+}
+
+pub fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(idx, _)| idx)
+        .unwrap_or(s.len())
+}
+
+pub fn insert_char_at(s: &mut String, char_idx: usize, ch: char) {
+    let byte_idx = char_to_byte_index(s, char_idx);
+    s.insert(byte_idx, ch);
+}
+
+pub fn insert_str_at(s: &mut String, char_idx: usize, text: &str) {
+    let byte_idx = char_to_byte_index(s, char_idx);
+    s.insert_str(byte_idx, text);
+}
+
+pub fn remove_char_at(s: &mut String, char_idx: usize) -> Option<char> {
+    if char_idx >= s.chars().count() {
+        return None;
+    }
+    let byte_idx = char_to_byte_index(s, char_idx);
+    Some(s.remove(byte_idx))
+}
+
+pub fn prev_word_boundary(s: &str, char_idx: usize) -> usize {
+    if char_idx == 0 {
+        return 0;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = char_idx.min(chars.len());
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+pub fn next_word_boundary(s: &str, char_idx: usize) -> usize {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = char_idx.min(len);
+    while i < len && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    while i < len && chars[i].is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn redraw_line(line: &str) {
+    redraw_line_with_cursor(line, "", line.chars().count());
+}
+
+fn redraw_line_with_cursor(line: &str, suggestion: &str, cursor_pos: usize) {
+    let p = prompt();
+    let hl = highlight_line(line);
+    let line_char_count = line.chars().count();
+
+    let effective_suggestion = if cursor_pos == line_char_count {
+        suggestion
+    } else {
+        ""
+    };
+
+    if effective_suggestion.is_empty() {
+        print!("\r\x1b[2K{}{}", p, hl);
+    } else {
+        print!("\r\x1b[2K{}{}\x1b[2;37m{}\x1b[0m", p, hl, effective_suggestion);
+    }
+
+    let total_rendered = line_char_count + effective_suggestion.chars().count();
+    if cursor_pos < total_rendered {
+        let back = total_rendered - cursor_pos;
+        print!("\x1b[{}D", back);
+    }
+    io::stdout().flush().ok();
 }
 
 fn read_terminal_character(reader: &mut impl Read) -> io::Result<Option<char>> {
@@ -402,37 +976,60 @@ fn read_terminal_character(reader: &mut impl Read) -> io::Result<Option<char>> {
         .map(Some)
 }
 
-fn redraw_line(line: &str) {
-    print!("\r\x1b[2K{}{}", prompt(), highlight_line(line));
-    io::stdout().flush().ok();
+
+static PROMPT_PREFIX: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub fn set_prompt_prefix(prefix: Option<String>) {
+    if let Ok(mut lock) = PROMPT_PREFIX.write() {
+        *lock = prefix;
+    }
 }
 
-fn redraw_line_with_suggestion(line: &str, suggestion: &str) {
-    print!(
-        "\r\x1b[2K{}{}\x1b[2;37m{}\x1b[0m",
-        prompt(),
-        highlight_line(line),
-        suggestion
-    );
-    io::stdout().flush().ok();
+pub fn get_prompt_prefix() -> Option<String> {
+    PROMPT_PREFIX.read().ok().and_then(|l| l.clone())
 }
 
 fn prompt() -> String {
     let current = env::current_dir().unwrap_or_else(|_| PathBuf::from("?"));
-    let display = env::var_os("HOME")
-        .map(PathBuf::from)
-        .and_then(|home| current.strip_prefix(home).ok().map(Path::to_path_buf))
-        .map(|relative| {
-            if relative.as_os_str().is_empty() {
-                "~".to_string()
-            } else {
-                format!("~/{}", relative.display())
-            }
-        })
-        .unwrap_or_else(|| current.display().to_string());
+    let cwd_str = current.to_string_lossy();
 
-    let git_context = git_prompt_context(&current);
-    format!("\x1b[1;35mmshell\x1b[0m \x1b[1;34m{display}\x1b[0m{git_context} $ ")
+    let display = if let Some(idx) = cwd_str.find("/shellpilot_sandbox_").or_else(|| cwd_str.find("/mshell_sandbox_")) {
+        if let Some(ws_idx) = cwd_str[idx..].find("/workspace") {
+            let rel = &cwd_str[idx + ws_idx + "/workspace".len()..];
+            if rel.is_empty() {
+                "~/lab".to_string()
+            } else {
+                format!("~/lab{}", rel)
+            }
+        } else {
+            "~/lab".to_string()
+        }
+    } else {
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .and_then(|home| current.strip_prefix(home).ok().map(Path::to_path_buf))
+            .map(|relative| {
+                if relative.as_os_str().is_empty() {
+                    "~".to_string()
+                } else {
+                    format!("~/{}", relative.display())
+                }
+            })
+            .unwrap_or_else(|| current.display().to_string())
+    };
+
+    let git_context = if cwd_str.contains("/shellpilot_sandbox_") || cwd_str.contains("/mshell_sandbox_") {
+        String::new()
+    } else {
+        git_prompt_context(&current)
+    };
+
+    let tag = if let Some(prefix) = get_prompt_prefix() {
+        format!("\x1b[1;33m[{prefix}]\x1b[0m")
+    } else {
+        "\x1b[1;35mshellpilot\x1b[0m".to_string()
+    };
+    format!("{tag} \x1b[1;34m{display}\x1b[0m{git_context} $ ")
 }
 
 fn git_prompt_context(directory: &Path) -> String {
@@ -444,9 +1041,9 @@ fn git_prompt_context(directory: &Path) -> String {
         if candidate.is_dir() {
             git_dir = Some(candidate);
             break;
-        } else if candidate.is_file() {
-            if let Ok(content) = fs::read_to_string(&candidate) {
-                if let Some(target) = content.trim().strip_prefix("gitdir:") {
+        } else if candidate.is_file()
+            && let Ok(content) = fs::read_to_string(&candidate)
+                && let Some(target) = content.trim().strip_prefix("gitdir:") {
                     let target_path = target.trim();
                     let p = if Path::new(target_path).is_absolute() {
                         PathBuf::from(target_path)
@@ -456,8 +1053,6 @@ fn git_prompt_context(directory: &Path) -> String {
                     git_dir = Some(p);
                     break;
                 }
-            }
-        }
         match dir.parent() {
             Some(parent) => dir = parent,
             None => break,
@@ -558,7 +1153,7 @@ fn highlight_line(line: &str) -> String {
             let quote = character;
             highlighted.push_str(QUOTE);
             highlighted.push(quote);
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 highlighted.push(next);
                 if next == quote {
                     break;
@@ -846,7 +1441,7 @@ pub fn sanitize_pasted_text(input: &str) -> String {
 
 pub fn auto_escape_urls(line: &str) -> String {
     let mut result = String::new();
-    let mut chars = line.chars().peekable();
+    let chars = line.chars().peekable();
     let mut quote: Option<char> = None;
     let mut word = String::new();
 
@@ -868,7 +1463,7 @@ pub fn auto_escape_urls(line: &str) -> String {
         word.clear();
     };
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
@@ -1064,15 +1659,14 @@ fn run_reverse_history_search(
 
         match character {
             '\u{12}' => {
-                if let Some(current) = match_idx {
-                    if current > 0 {
+                if let Some(current) = match_idx
+                    && current > 0 {
                         if let Some(prev) = find_match(&query, history, current) {
                             match_idx = Some(prev);
                         } else {
                             match_idx = find_match(&query, history, history.len());
                         }
                     }
-                }
             }
             '\n' | '\r' => {
                 println!();
@@ -1223,7 +1817,7 @@ mod tests {
     fn executes_dash_c_with_args() {
         let mut shell = Shell::ephemeral();
         let args = vec![
-            "mshell".to_string(),
+            "shellpilot".to_string(),
             "-c".to_string(),
             "echo $1 $2".to_string(),
             "my_script".to_string(),
@@ -1240,12 +1834,12 @@ mod tests {
     #[test]
     fn executes_script_file() {
         let dir = std::env::temp_dir();
-        let script_path = dir.join("mshell_test_script.sh");
+        let script_path = dir.join("shellpilot_test_script.sh");
         std::fs::write(&script_path, "echo foo\ntrue\n").unwrap();
 
         let mut shell = Shell::ephemeral();
         let args = vec![
-            "mshell".to_string(),
+            "shellpilot".to_string(),
             script_path.to_str().unwrap().to_string(),
         ];
         assert_eq!(shell.run_with_args(&args), 0);
@@ -1286,5 +1880,70 @@ mod tests {
         assert!(fuzzy_match("gco", "git checkout"));
         assert!(fuzzy_match("dock", "docker run -it"));
         assert!(!fuzzy_match("xyz", "docker run"));
+    }
+
+    #[test]
+    fn test_char_and_byte_indexing() {
+        let ascii = "hello";
+        assert_eq!(char_to_byte_index(ascii, 0), 0);
+        assert_eq!(char_to_byte_index(ascii, 2), 2);
+        assert_eq!(char_to_byte_index(ascii, 5), 5);
+        assert_eq!(char_to_byte_index(ascii, 10), 5);
+
+        let unicode = "привет";
+        assert_eq!(char_to_byte_index(unicode, 0), 0);
+        assert_eq!(char_to_byte_index(unicode, 1), 2);
+        assert_eq!(char_to_byte_index(unicode, 6), 12);
+    }
+
+    #[test]
+    fn test_insert_char_and_str_at() {
+        let mut s = "hllo".to_string();
+        insert_char_at(&mut s, 1, 'e');
+        assert_eq!(s, "hello");
+
+        insert_str_at(&mut s, 5, " world");
+        assert_eq!(s, "hello world");
+
+        let mut u = "пвет".to_string();
+        insert_str_at(&mut u, 1, "ри");
+        assert_eq!(u, "привет");
+    }
+
+    #[test]
+    fn test_remove_char_at() {
+        let mut s = "hello".to_string();
+        let removed = remove_char_at(&mut s, 1);
+        assert_eq!(removed, Some('e'));
+        assert_eq!(s, "hllo");
+
+        let mut u = "привет".to_string();
+        let removed_u = remove_char_at(&mut u, 1);
+        assert_eq!(removed_u, Some('р'));
+        assert_eq!(u, "пивет");
+    }
+
+    #[test]
+    fn test_word_boundary_navigation() {
+        let text = "cargo test --bin shellpilot";
+        // From end of string (index 27)
+        let p1 = prev_word_boundary(text, 27);
+        assert_eq!(p1, 17); // start of "shellpilot"
+        let p2 = prev_word_boundary(text, p1);
+        assert_eq!(p2, 11); // start of "--bin"
+        let p3 = prev_word_boundary(text, p2);
+        assert_eq!(p3, 6);  // start of "test"
+        let p4 = prev_word_boundary(text, p3);
+        assert_eq!(p4, 0);  // start of "cargo"
+
+        // Next word navigation
+        let n1 = next_word_boundary(text, 0);
+        assert_eq!(n1, 6);  // start of "test"
+        let n2 = next_word_boundary(text, n1);
+        assert_eq!(n2, 11); // start of "--bin"
+        let n3 = next_word_boundary(text, n2);
+        assert_eq!(n3, 17); // start of "shellpilot"
+        let n4 = next_word_boundary(text, n3);
+        assert_eq!(n4, 27); // end of text
     }
 }

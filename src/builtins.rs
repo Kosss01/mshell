@@ -1,18 +1,19 @@
 use std::env;
-use std::io::Write;
 use std::path::PathBuf;
 
-fn builtin_print(s: &str) {
-    let mut out = std::io::stdout();
-    let _ = out.write_all(s.as_bytes());
-    let _ = out.flush();
+pub(crate) fn builtin_print(s: &str) {
+    let bytes = s.as_bytes();
+    unsafe {
+        libc::write(libc::STDOUT_FILENO, bytes.as_ptr() as *const libc::c_void, bytes.len());
+    }
 }
 
-fn builtin_println(s: &str) {
-    let mut out = std::io::stdout();
-    let _ = out.write_all(s.as_bytes());
-    let _ = out.write_all(b"\n");
-    let _ = out.flush();
+pub(crate) fn builtin_println(s: &str) {
+    let bytes = s.as_bytes();
+    unsafe {
+        libc::write(libc::STDOUT_FILENO, bytes.as_ptr() as *const libc::c_void, bytes.len());
+        libc::write(libc::STDOUT_FILENO, b"\n".as_ptr() as *const libc::c_void, 1);
+    }
 }
 
 pub enum BuiltinResult {
@@ -56,6 +57,23 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "abbr",
     "alias",
     "unalias",
+    "tutor",
+    "whatif",
+    "undo",
+    "snapshot",
+    "tree",
+    "cheat",
+    "doctor",
+    "service",
+    "curl",
+    "cadet",
+    "profile",
+    "drill",
+    "db",
+    "ping",
+    "netstat",
+    "tour",
+    "explore",
 ];
 
 pub fn is_builtin(command: &str) -> bool {
@@ -104,237 +122,6 @@ fn exit(args: &[String]) -> Result<BuiltinResult, String> {
 
 fn noop(_args: &[String]) -> Result<BuiltinResult, String> {
     Ok(BuiltinResult::Handled)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_exit_status() {
-        let result = execute("exit", &["42".into()], |_| None).unwrap();
-        assert!(matches!(result, BuiltinResult::Exit(42)));
-    }
-
-    #[test]
-    fn provides_noop_builtin() {
-        assert!(matches!(
-            execute(":", &["ignored".into()], |_| None).unwrap(),
-            BuiltinResult::Handled
-        ));
-        assert!(is_builtin(":"));
-    }
-
-    #[test]
-    fn command_reports_builtin_and_missing_status() {
-        let result = execute(
-            "command",
-            &["-v".into(), "echo".into(), "definitely-missing".into()],
-            |_| None,
-        )
-        .unwrap();
-
-        assert!(matches!(result, BuiltinResult::Status(1)));
-    }
-
-    #[test]
-    fn rejects_invalid_exit_status() {
-        assert!(execute("exit", &["nope".into()], |_| None).is_err());
-        assert!(execute("exit", &["256".into()], |_| None).is_err());
-    }
-
-    #[test]
-    fn exports_environment_assignments() {
-        let name = "MELCHIOR_TEST_EXPORT";
-        unsafe { env::remove_var(name) };
-        let result = execute("export", &[format!("{name}=enabled")], |_| None).unwrap();
-        assert!(matches!(result, BuiltinResult::Handled));
-        assert_eq!(env::var(name).unwrap(), "enabled");
-        unsafe { env::remove_var(name) };
-    }
-
-    #[test]
-    fn rejects_invalid_export_names() {
-        assert!(execute("export", &["not-valid=value".into()], |_| None).is_err());
-        assert!(execute("export", &["missing-equals".into()], |_| None).is_err());
-    }
-
-    #[test]
-    fn export_does_not_partially_apply_invalid_assignments() {
-        let name = "MELCHIOR_TEST_EXPORT_ATOMIC";
-        unsafe { env::remove_var(name) };
-        assert!(
-            execute(
-                "export",
-                &[format!("{name}=enabled"), "not-valid=value".into()],
-                |_| None
-            )
-            .is_err()
-        );
-        assert!(env::var(name).is_err());
-    }
-
-    #[test]
-    fn unsets_environment_variables() {
-        let name = "MELCHIOR_TEST_UNSET";
-        unsafe { env::set_var(name, "value") };
-        let result = execute("unset", &[name.into()], |_| None).unwrap();
-        assert!(matches!(result, BuiltinResult::Handled));
-        assert!(env::var(name).is_err());
-    }
-
-    #[test]
-    fn rejects_invalid_unset_names() {
-        assert!(execute("unset", &["not-valid".into()], |_| None).is_err());
-        assert!(execute("unset", &[], |_| None).is_err());
-    }
-
-    #[test]
-    fn echo_supports_n_without_consuming_regular_arguments() {
-        assert_eq!(
-            echo_output(&["-n".into(), "hello".into(), "world".into()]),
-            ("hello world".into(), false)
-        );
-        assert_eq!(
-            echo_output(&["hello".into(), "-n".into()]),
-            ("hello -n".into(), true)
-        );
-    }
-
-    #[test]
-    fn cd_dash_switches_to_oldpwd_and_updates_directory_variables() {
-        let original_directory = env::current_dir().unwrap();
-        let original_pwd = env::var_os("PWD");
-        let original_oldpwd = env::var_os("OLDPWD");
-        let target = env::temp_dir().join(format!("melchior-cd-{}", std::process::id()));
-        std::fs::create_dir_all(&target).unwrap();
-
-        unsafe {
-            env::set_var("PWD", &original_directory);
-            env::set_var("OLDPWD", &original_directory);
-        }
-        execute("cd", &[target.to_string_lossy().into_owned()], |_| None).unwrap();
-        assert_eq!(env::current_dir().unwrap(), target);
-        assert_eq!(
-            env::var_os("OLDPWD").as_deref(),
-            Some(original_directory.as_os_str())
-        );
-
-        execute("cd", &["-".into()], |_| None).unwrap();
-        assert_eq!(env::current_dir().unwrap(), original_directory);
-        assert_eq!(
-            env::var_os("PWD").as_deref(),
-            Some(original_directory.as_os_str())
-        );
-
-        env::set_current_dir(&original_directory).unwrap();
-        unsafe {
-            match original_pwd {
-                Some(value) => env::set_var("PWD", value),
-                None => env::remove_var("PWD"),
-            }
-            match original_oldpwd {
-                Some(value) => env::set_var("OLDPWD", value),
-                None => env::remove_var("OLDPWD"),
-            }
-        }
-        std::fs::remove_dir(&target).unwrap();
-    }
-
-    #[test]
-    fn type_accepts_multiple_commands() {
-        let result = execute(
-            "type",
-            &["echo".into(), "definitely-missing".into()],
-            |_| None,
-        )
-        .unwrap();
-
-        assert!(matches!(result, BuiltinResult::Status(1)));
-    }
-
-    #[test]
-    fn type_returns_success_when_all_commands_are_found() {
-        let result = execute("type", &["echo".into(), "pwd".into()], |_| None).unwrap();
-
-        assert!(matches!(result, BuiltinResult::Handled));
-    }
-
-    #[test]
-    fn rejects_pwd_arguments() {
-        assert!(execute("pwd", &["unexpected".into()], |_| None).is_err());
-    }
-
-    #[test]
-    fn unset_does_not_partially_apply_invalid_names() {
-        let name = "MELCHIOR_TEST_UNSET_ATOMIC";
-        unsafe { env::set_var(name, "value") };
-        assert!(execute("unset", &[name.into(), "not-valid".into()], |_| None).is_err());
-        assert_eq!(env::var(name).unwrap(), "value");
-        unsafe { env::remove_var(name) };
-    }
-
-    #[test]
-    fn lists_environment_with_env_builtin() {
-        unsafe { env::set_var("MELCHIOR_TEST_ENV", "visible") };
-        assert!(matches!(
-            execute("env", &[], |_| None).unwrap(),
-            BuiltinResult::Handled
-        ));
-        unsafe { env::remove_var("MELCHIOR_TEST_ENV") };
-    }
-
-    #[test]
-    fn sorts_environment_names() {
-        let name_a = "MELCHIOR_TEST_SORT_A";
-        let name_z = "MELCHIOR_TEST_SORT_Z";
-        unsafe {
-            env::set_var(name_z, "z");
-            env::set_var(name_a, "a");
-        }
-
-        let variables = sorted_environment();
-        let position_a = variables.iter().position(|(name, _)| name == name_a);
-        let position_z = variables.iter().position(|(name, _)| name == name_z);
-        assert!(position_a < position_z);
-
-        unsafe {
-            env::remove_var(name_a);
-            env::remove_var(name_z);
-        }
-    }
-
-    #[test]
-    fn rejects_env_arguments() {
-        assert!(execute("env", &["unexpected".into()], |_| None).is_err());
-    }
-
-    #[test]
-    fn provides_standard_status_builtins() {
-        assert!(matches!(
-            execute("true", &[], |_| None).unwrap(),
-            BuiltinResult::Status(0)
-        ));
-        assert!(matches!(
-            execute("false", &[], |_| None).unwrap(),
-            BuiltinResult::Status(1)
-        ));
-    }
-
-    #[test]
-    fn validates_printf_formats() {
-        assert!(matches!(
-            execute(
-                "printf",
-                &["%s=%d\\n".into(), "value".into(), "7".into()],
-                |_| None
-            )
-            .unwrap(),
-            BuiltinResult::Handled
-        ));
-        assert!(execute("printf", &["%q".into()], |_| None).is_err());
-        assert!(execute("printf", &["%d".into(), "nope".into()], |_| None).is_err());
-    }
 }
 
 fn pwd(args: &[String]) -> Result<BuiltinResult, String> {
@@ -413,7 +200,7 @@ fn expand_environment_variables(input: &str) -> String {
         match chars.peek() {
             Some('{') => {
                 chars.next();
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == '}' {
                         break;
                     }
@@ -651,3 +438,235 @@ fn command_lookup(
     }
     Ok(BuiltinResult::Status(if all_found { 0 } else { 1 }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_exit_status() {
+        let result = execute("exit", &["42".into()], |_| None).unwrap();
+        assert!(matches!(result, BuiltinResult::Exit(42)));
+    }
+
+    #[test]
+    fn provides_noop_builtin() {
+        assert!(matches!(
+            execute(":", &["ignored".into()], |_| None).unwrap(),
+            BuiltinResult::Handled
+        ));
+        assert!(is_builtin(":"));
+    }
+
+    #[test]
+    fn command_reports_builtin_and_missing_status() {
+        let result = execute(
+            "command",
+            &["-v".into(), "echo".into(), "definitely-missing".into()],
+            |_| None,
+        )
+        .unwrap();
+
+        assert!(matches!(result, BuiltinResult::Status(1)));
+    }
+
+    #[test]
+    fn rejects_invalid_exit_status() {
+        assert!(execute("exit", &["nope".into()], |_| None).is_err());
+        assert!(execute("exit", &["256".into()], |_| None).is_err());
+    }
+
+    #[test]
+    fn exports_environment_assignments() {
+        let name = "MELCHIOR_TEST_EXPORT";
+        unsafe { env::remove_var(name) };
+        let result = execute("export", &[format!("{name}=enabled")], |_| None).unwrap();
+        assert!(matches!(result, BuiltinResult::Handled));
+        assert_eq!(env::var(name).unwrap(), "enabled");
+        unsafe { env::remove_var(name) };
+    }
+
+    #[test]
+    fn rejects_invalid_export_names() {
+        assert!(execute("export", &["not-valid=value".into()], |_| None).is_err());
+        assert!(execute("export", &["missing-equals".into()], |_| None).is_err());
+    }
+
+    #[test]
+    fn export_does_not_partially_apply_invalid_assignments() {
+        let name = "MELCHIOR_TEST_EXPORT_ATOMIC";
+        unsafe { env::remove_var(name) };
+        assert!(
+            execute(
+                "export",
+                &[format!("{name}=enabled"), "not-valid=value".into()],
+                |_| None
+            )
+            .is_err()
+        );
+        assert!(env::var(name).is_err());
+    }
+
+    #[test]
+    fn unsets_environment_variables() {
+        let name = "MELCHIOR_TEST_UNSET";
+        unsafe { env::set_var(name, "value") };
+        let result = execute("unset", &[name.into()], |_| None).unwrap();
+        assert!(matches!(result, BuiltinResult::Handled));
+        assert!(env::var(name).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_unset_names() {
+        assert!(execute("unset", &["not-valid".into()], |_| None).is_err());
+        assert!(execute("unset", &[], |_| None).is_err());
+    }
+
+    #[test]
+    fn echo_supports_n_without_consuming_regular_arguments() {
+        assert_eq!(
+            echo_output(&["-n".into(), "hello".into(), "world".into()]),
+            ("hello world".into(), false)
+        );
+        assert_eq!(
+            echo_output(&["hello".into(), "-n".into()]),
+            ("hello -n".into(), true)
+        );
+    }
+
+    #[test]
+    fn cd_dash_switches_to_oldpwd_and_updates_directory_variables() {
+        let original_directory = env::current_dir().unwrap();
+        let original_pwd = env::var_os("PWD");
+        let original_oldpwd = env::var_os("OLDPWD");
+        let target = env::temp_dir().join(format!("melchior-cd-{}", std::process::id()));
+        std::fs::create_dir_all(&target).unwrap();
+
+        unsafe {
+            env::set_var("PWD", &original_directory);
+            env::set_var("OLDPWD", &original_directory);
+        }
+        execute("cd", &[target.to_string_lossy().into_owned()], |_| None).unwrap();
+        assert_eq!(env::current_dir().unwrap(), target);
+        assert_eq!(
+            env::var_os("OLDPWD").as_deref(),
+            Some(original_directory.as_os_str())
+        );
+
+        execute("cd", &["-".into()], |_| None).unwrap();
+        assert_eq!(env::current_dir().unwrap(), original_directory);
+        assert_eq!(
+            env::var_os("PWD").as_deref(),
+            Some(original_directory.as_os_str())
+        );
+
+        env::set_current_dir(&original_directory).unwrap();
+        unsafe {
+            match original_pwd {
+                Some(value) => env::set_var("PWD", value),
+                None => env::remove_var("PWD"),
+            }
+            match original_oldpwd {
+                Some(value) => env::set_var("OLDPWD", value),
+                None => env::remove_var("OLDPWD"),
+            }
+        }
+        std::fs::remove_dir(&target).unwrap();
+    }
+
+    #[test]
+    fn type_accepts_multiple_commands() {
+        let result = execute(
+            "type",
+            &["echo".into(), "definitely-missing".into()],
+            |_| None,
+        )
+        .unwrap();
+
+        assert!(matches!(result, BuiltinResult::Status(1)));
+    }
+
+    #[test]
+    fn type_returns_success_when_all_commands_are_found() {
+        let result = execute("type", &["echo".into(), "pwd".into()], |_| None).unwrap();
+
+        assert!(matches!(result, BuiltinResult::Handled));
+    }
+
+    #[test]
+    fn rejects_pwd_arguments() {
+        assert!(execute("pwd", &["unexpected".into()], |_| None).is_err());
+    }
+
+    #[test]
+    fn unset_does_not_partially_apply_invalid_names() {
+        let name = "MELCHIOR_TEST_UNSET_ATOMIC";
+        unsafe { env::set_var(name, "value") };
+        assert!(execute("unset", &[name.into(), "not-valid".into()], |_| None).is_err());
+        assert_eq!(env::var(name).unwrap(), "value");
+        unsafe { env::remove_var(name) };
+    }
+
+    #[test]
+    fn lists_environment_with_env_builtin() {
+        unsafe { env::set_var("MELCHIOR_TEST_ENV", "visible") };
+        assert!(matches!(
+            execute("env", &[], |_| None).unwrap(),
+            BuiltinResult::Handled
+        ));
+        unsafe { env::remove_var("MELCHIOR_TEST_ENV") };
+    }
+
+    #[test]
+    fn sorts_environment_names() {
+        let name_a = "MELCHIOR_TEST_SORT_A";
+        let name_z = "MELCHIOR_TEST_SORT_Z";
+        unsafe {
+            env::set_var(name_z, "z");
+            env::set_var(name_a, "a");
+        }
+
+        let variables = sorted_environment();
+        let position_a = variables.iter().position(|(name, _)| name == name_a);
+        let position_z = variables.iter().position(|(name, _)| name == name_z);
+        assert!(position_a < position_z);
+
+        unsafe {
+            env::remove_var(name_a);
+            env::remove_var(name_z);
+        }
+    }
+
+    #[test]
+    fn rejects_env_arguments() {
+        assert!(execute("env", &["unexpected".into()], |_| None).is_err());
+    }
+
+    #[test]
+    fn provides_standard_status_builtins() {
+        assert!(matches!(
+            execute("true", &[], |_| None).unwrap(),
+            BuiltinResult::Status(0)
+        ));
+        assert!(matches!(
+            execute("false", &[], |_| None).unwrap(),
+            BuiltinResult::Status(1)
+        ));
+    }
+
+    #[test]
+    fn validates_printf_formats() {
+        assert!(matches!(
+            execute(
+                "printf",
+                &["%s=%d\\n".into(), "value".into(), "7".into()],
+                |_| None
+            )
+            .unwrap(),
+            BuiltinResult::Handled
+        ));
+        assert!(execute("printf", &["%q".into()], |_| None).is_err());
+        assert!(execute("printf", &["%d".into(), "nope".into()], |_| None).is_err());
+    }
+}
+

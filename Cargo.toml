@@ -1,7 +1,22 @@
 [package]
-name = "mshell"
+name = "shellpilot"
 version = "0.1.0"
 edition = "2024"
+description = "The Flight Simulator for the Unix Command Line — Gamified Linux Training, SRE Chaos Drills & Interactive Cockpit"
+default-run = "shellpilot"
+keywords = ["shell", "terminal", "flight-simulator", "gamification", "devops"]
+
+[lib]
+name = "shellpilot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "shellpilot"
+path = "src/main.rs"
+
+[[bin]]
+name = "pilot"
+path = "src/bin/pilot.rs"
 
 [dependencies]
 libc = "0.2"

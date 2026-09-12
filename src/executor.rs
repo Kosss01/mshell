@@ -109,6 +109,12 @@ pub struct Executor {
     functions: RefCell<std::collections::BTreeMap<String, ParsedFunction>>,
     completion_extractor: crate::completions::HelpCompletionExtractor,
     interactive: std::cell::Cell<bool>,
+    pub tutor: RefCell<Option<crate::tutor::TutorEngine>>,
+    pub sandbox: RefCell<Option<crate::sandbox::SandboxManager>>,
+    pub server_sim: RefCell<crate::server_sim::ServerSimulator>,
+    pub cadet: RefCell<crate::cadet::CadetProfile>,
+    pub drills: RefCell<crate::drills::DrillEngine>,
+    pub last_failed_cmd: RefCell<Option<(String, i32)>>,
 }
 
 fn default_abbreviations() -> std::collections::BTreeMap<String, String> {
@@ -156,6 +162,12 @@ pub struct ProcessRecord {
     pub process_id: Option<u32>,
 }
 
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Executor {
     pub fn new() -> Self {
         crate::parser::register_subshell_executor(execute_capture);
@@ -170,6 +182,12 @@ impl Executor {
             functions: RefCell::new(std::collections::BTreeMap::new()),
             completion_extractor: crate::completions::HelpCompletionExtractor::new(),
             interactive: std::cell::Cell::new(false),
+            tutor: RefCell::new(None),
+            sandbox: RefCell::new(None),
+            server_sim: RefCell::new(crate::server_sim::ServerSimulator::new()),
+            cadet: RefCell::new(crate::cadet::CadetProfile::new(None)),
+            drills: RefCell::new(crate::drills::DrillEngine::new()),
+            last_failed_cmd: RefCell::new(None),
         }
     }
 
@@ -188,9 +206,10 @@ impl Executor {
             Ok(database) => {
                 executor.load_history(&database);
                 executor.load_timeline(&database);
+                *executor.cadet.borrow_mut() = crate::cadet::CadetProfile::new(Some(&database));
                 *executor.database.borrow_mut() = Some(database);
             }
-            Err(error) => eprintln!("mshell: persistent history unavailable: {error}"),
+            Err(error) => eprintln!("shellpilot: persistent history unavailable: {error}"),
         }
         executor
     }
@@ -579,6 +598,518 @@ impl Executor {
         }
     }
 
+    pub fn ensure_sandbox(&self) -> Result<PathBuf, String> {
+        let needs_init = self.sandbox.borrow().is_none();
+        if needs_init {
+            let sb = crate::sandbox::SandboxManager::new().map_err(|e| format!("failed to initialize sandbox: {e}"))?;
+            let ws = sb.workspace.clone();
+            if self.interactive.get() {
+                std::env::set_current_dir(&ws).map_err(|e| format!("failed to enter sandbox directory: {e}"))?;
+            }
+            *self.sandbox.borrow_mut() = Some(sb);
+            Ok(ws)
+        } else {
+            Ok(self.sandbox.borrow().as_ref().unwrap().workspace.clone())
+        }
+    }
+
+    pub fn current_workspace(&self) -> PathBuf {
+        if let Some(ref sb) = *self.sandbox.borrow() {
+            sb.workspace.clone()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
+    }
+
+    pub fn ensure_tutor(&self) {
+        let needs_init = self.tutor.borrow().is_none();
+        if needs_init {
+            let db_ref = self.database.borrow();
+            let engine = crate::tutor::TutorEngine::new(db_ref.as_ref());
+            *self.tutor.borrow_mut() = Some(engine);
+        }
+    }
+
+    pub fn mark_tutor_lesson_completed(&self, lesson_id: &str) {
+        if let Some(ref mut tutor) = *self.tutor.borrow_mut() {
+            tutor.mark_completed(lesson_id, self.database.borrow().as_ref());
+        }
+        let mut cadet = self.cadet.borrow_mut();
+        cadet.completed_lessons.insert(lesson_id.to_string());
+        if let Some(new_rank) = cadet.add_xp(50, self.database.borrow().as_ref()) {
+            println!("\n🎖️ \x1b[1;33m[PROMOTION!]\x1b[0m You have been promoted to \x1b[1;32m{}\x1b[0m!", new_rank.title());
+        }
+    }
+
+    pub fn record_cadet_command(&self) {
+        self.cadet
+            .borrow_mut()
+            .record_command(self.database.borrow().as_ref());
+    }
+
+    fn tutor_cmd(&self, args: &[String]) -> ExecutionResult {
+        self.ensure_tutor();
+
+        if args.is_empty() || args[0] == "list" {
+            let overview = {
+                let tutor = self.tutor.borrow();
+                tutor.as_ref().unwrap().list_tracks_overview()
+            };
+            println!("{overview}");
+            return ExecutionResult::Builtin;
+        }
+
+        match args[0].as_str() {
+            "start" => {
+                if args.len() < 2 {
+                    eprintln!("tutor: start requires a lesson ID (e.g. 'tutor start nav_01')");
+                    return ExecutionResult::BuiltinStatus(1);
+                }
+                let ws = match self.ensure_sandbox() {
+                    Ok(w) => w,
+                    Err(e) => {
+                        eprintln!("tutor: {e}");
+                        return ExecutionResult::Failed;
+                    }
+                };
+                let res = {
+                    let mut tutor = self.tutor.borrow_mut();
+                    tutor.as_mut().unwrap().start_lesson(&args[1], &ws)
+                };
+                match res {
+                    Ok(briefing) => {
+                        println!("{briefing}");
+                        crate::shell::set_prompt_prefix(Some(format!("shellpilot:tutor 🎓 {}", args[1])));
+                        ExecutionResult::Builtin
+                    }
+                    Err(err) => {
+                        eprintln!("tutor: {err}");
+                        ExecutionResult::Failed
+                    }
+                }
+            }
+            "check" => {
+                let ws = self.current_workspace();
+                let last_non_tutor = {
+                    self.history
+                        .borrow()
+                        .iter()
+                        .rev()
+                        .find(|cmd| !cmd.trim().starts_with("tutor"))
+                        .cloned()
+                };
+                let eval = {
+                    let tutor = self.tutor.borrow();
+                    tutor.as_ref().unwrap().evaluate_current(&ws, last_non_tutor.as_deref())
+                };
+                match eval {
+                    Some(crate::tutor::ValidationResult::Success { feedback }) => {
+                        println!("\n🎉 [OBJECTIVE COMPLETE!] {feedback}");
+                        println!("   Type 'tutor next' to advance to the next challenge!\n");
+                        let active_id = {
+                            let tutor = self.tutor.borrow();
+                            tutor.as_ref().unwrap().active_lesson_id.clone()
+                        };
+                        if let Some(id) = active_id {
+                            self.mark_tutor_lesson_completed(&id);
+                        }
+                        ExecutionResult::Builtin
+                    }
+                    Some(crate::tutor::ValidationResult::Incomplete { reason }) => {
+                        println!("⏳ [INCOMPLETE] {reason}");
+                        ExecutionResult::BuiltinStatus(1)
+                    }
+                    Some(crate::tutor::ValidationResult::Failed { error }) => {
+                        println!("❌ [FAILED] {error}");
+                        ExecutionResult::BuiltinStatus(1)
+                    }
+                    None => {
+                        println!("No active lesson. Start one with 'tutor start <id>' or type 'tutor' to see list.");
+                        ExecutionResult::Builtin
+                    }
+                }
+            }
+            "hint" => {
+                let hint = {
+                    let mut tutor = self.tutor.borrow_mut();
+                    tutor.as_mut().unwrap().next_hint()
+                };
+                if let Some(h) = hint {
+                    println!("{h}");
+                } else {
+                    println!("No active lesson. Choose one with 'tutor start <id>'.");
+                }
+                ExecutionResult::Builtin
+            }
+            "solution" => {
+                let sol = {
+                    let tutor = self.tutor.borrow();
+                    tutor.as_ref().unwrap().get_solution()
+                };
+                if let Some(s) = sol {
+                    println!("{s}");
+                } else {
+                    println!("No active lesson. Choose one with 'tutor start <id>'.");
+                }
+                ExecutionResult::Builtin
+            }
+            "reset" => {
+                let ws = self.current_workspace();
+                let res = {
+                    let mut tutor = self.tutor.borrow_mut();
+                    tutor.as_mut().unwrap().reset_lesson(&ws)
+                };
+                match res {
+                    Ok(msg) => {
+                        println!("{msg}");
+                        ExecutionResult::Builtin
+                    }
+                    Err(err) => {
+                        eprintln!("tutor: {err}");
+                        ExecutionResult::Failed
+                    }
+                }
+            }
+            "next" => {
+                let ws = self.current_workspace();
+                let (res, active_id) = {
+                    let mut tutor = self.tutor.borrow_mut();
+                    let t = tutor.as_mut().unwrap();
+                    let r = t.advance_to_next(&ws);
+                    let active_id = t.active_lesson_id.clone();
+                    (r, active_id)
+                };
+                match res {
+                    Ok(msg) => {
+                        println!("{msg}");
+                        if let Some(id) = active_id {
+                            crate::shell::set_prompt_prefix(Some(format!("shellpilot:tutor 🎓 {id}")));
+                        }
+                        ExecutionResult::Builtin
+                    }
+                    Err(err) => {
+                        eprintln!("tutor: {err}");
+                        ExecutionResult::Failed
+                    }
+                }
+            }
+            "exit" => {
+                {
+                    let mut tutor = self.tutor.borrow_mut();
+                    tutor.as_mut().unwrap().active_lesson_id = None;
+                }
+                crate::shell::set_prompt_prefix(None);
+                println!("Exited tutor mode.");
+                ExecutionResult::Builtin
+            }
+            unknown => {
+                eprintln!("tutor: unknown subcommand '{unknown}'. Usage: tutor [start|check|hint|solution|reset|next|list|exit]");
+                ExecutionResult::BuiltinStatus(1)
+            }
+        }
+    }
+
+    fn whatif_cmd(&self, args: &[String]) -> ExecutionResult {
+        if args.is_empty() {
+            eprintln!("usage: whatif <command>");
+            return ExecutionResult::BuiltinStatus(1);
+        }
+        let cmd = args.join(" ");
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let preview = crate::sandbox::execute_whatif(&cmd, &cwd);
+        println!("{preview}");
+        self.cadet.borrow_mut().record_whatif(self.database.borrow().as_ref());
+        ExecutionResult::Builtin
+    }
+
+    fn undo_cmd(&self, args: &[String]) -> ExecutionResult {
+        if args.first().map(|s| s.as_str()) == Some("diff") {
+            let sb_borrow = self.sandbox.borrow();
+            if let Some(ref sb) = *sb_borrow {
+                match sb.diff_previous_snapshot() {
+                    Ok(diff) => {
+                        println!("{diff}");
+                        return ExecutionResult::Builtin;
+                    }
+                    Err(err) => {
+                        eprintln!("undo diff: {err}");
+                        return ExecutionResult::Failed;
+                    }
+                }
+            } else {
+                eprintln!("undo diff: no active sandbox session.");
+                return ExecutionResult::Failed;
+            }
+        }
+
+        let mut sb_borrow = self.sandbox.borrow_mut();
+        if let Some(ref mut sb) = *sb_borrow {
+            match sb.undo() {
+                Ok(msg) => {
+                    println!("{msg}");
+                    self.cadet.borrow_mut().record_undo(self.database.borrow().as_ref());
+                    ExecutionResult::Builtin
+                }
+                Err(err) => {
+                    eprintln!("undo: {err}");
+                    ExecutionResult::Failed
+                }
+            }
+        } else {
+            eprintln!("undo: no active sandbox session. Start one with 'shellpilot --sandbox' or run 'snapshot'.");
+            ExecutionResult::Failed
+        }
+    }
+
+    fn tree_cmd(&self, args: &[String]) -> ExecutionResult {
+        match crate::guidance::run_tree(args) {
+            Ok(tree) => {
+                println!("{tree}");
+                ExecutionResult::Builtin
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExecutionResult::Failed
+            }
+        }
+    }
+
+    fn cheat_cmd(&self, args: &[String]) -> ExecutionResult {
+        let tool = args.first().map(|s| s.as_str());
+        let text = crate::guidance::run_cheat(tool);
+        println!("{text}");
+        ExecutionResult::Builtin
+    }
+
+    fn doctor_cmd(&self, _args: &[String]) -> ExecutionResult {
+        let last = self.last_failed_cmd.borrow();
+        let (cmd, status) = match *last {
+            Some((ref c, s)) => (c.clone(), s),
+            None => ("".to_string(), 0),
+        };
+        let cwd = self.current_workspace();
+        let report = crate::guidance::diagnose(&cmd, status, &cwd);
+        println!("{}", report.format());
+        ExecutionResult::Builtin
+    }
+
+    fn service_cmd(&self, args: &[String]) -> ExecutionResult {
+        let ws = self.current_workspace();
+        match self.server_sim.borrow().handle_service_command(args, &ws) {
+            Ok(msg) => {
+                println!("{msg}");
+                ExecutionResult::Builtin
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                ExecutionResult::Failed
+            }
+        }
+    }
+
+    fn curl_cmd(&self, args: &[String]) -> ExecutionResult {
+        let ws = self.current_workspace();
+        match self.server_sim.borrow().handle_curl(args, &ws) {
+            Ok(msg) => {
+                println!("{msg}");
+                ExecutionResult::Builtin
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                ExecutionResult::Failed
+            }
+        }
+    }
+
+    fn cadet_cmd(&self, _args: &[String]) -> ExecutionResult {
+        let dossier = self.cadet.borrow().render_dossier();
+        println!("{dossier}");
+        ExecutionResult::Builtin
+    }
+
+    fn drill_cmd(&self, args: &[String]) -> ExecutionResult {
+        if args.is_empty() || args[0] == "list" {
+            let list = self.drills.borrow().list_drills();
+            println!("{list}");
+            return ExecutionResult::Builtin;
+        }
+
+        let ws = match self.ensure_sandbox() {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("drill: {e}");
+                return ExecutionResult::Failed;
+            }
+        };
+
+        match args[0].as_str() {
+            "start" => {
+                if args.len() < 2 {
+                    eprintln!("drill: start requires a drill ID (e.g. 'drill start drill-disk')");
+                    return ExecutionResult::BuiltinStatus(1);
+                }
+                let res = {
+                    let mut drills = self.drills.borrow_mut();
+                    drills.start_drill(&args[1], &ws)
+                };
+                match res {
+                    Ok(alert) => {
+                        println!("{alert}");
+                        ExecutionResult::Builtin
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExecutionResult::Failed
+                    }
+                }
+            }
+            "check" => {
+                let (res, active_id) = {
+                    let mut drills = self.drills.borrow_mut();
+                    let active_id = drills.active_drill_id.clone();
+                    let res = drills.check_active(&ws);
+                    (res, active_id)
+                };
+                match res {
+                    Ok(msg) => {
+                        println!("{msg}");
+                        if let Some(id) = active_id {
+                            let db = self.database.borrow();
+                            self.cadet.borrow_mut().record_drill_completed(&id, db.as_ref());
+                        }
+                        ExecutionResult::Builtin
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExecutionResult::BuiltinStatus(1)
+                    }
+                }
+            }
+            "hint" => {
+                let hint = {
+                    let drills = self.drills.borrow();
+                    drills.hint_active()
+                };
+                if let Some(hint) = hint {
+                    println!("{hint}");
+                } else {
+                    println!("No active drill. Trigger one with 'drill start <id>'.");
+                }
+                ExecutionResult::Builtin
+            }
+            unknown => {
+                eprintln!("drill: unknown subcommand '{unknown}'. Available: list, start, check, hint");
+                ExecutionResult::BuiltinStatus(1)
+            }
+        }
+    }
+
+    fn db_cmd(&self, args: &[String]) -> ExecutionResult {
+        let ws = match self.ensure_sandbox() {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("db: {e}");
+                return ExecutionResult::Failed;
+            }
+        };
+
+        match crate::server_sim::run_db_command(&ws, args) {
+            Ok(output) => {
+                println!("{output}");
+                self.cadet.borrow_mut().record_db_query(self.database.borrow().as_ref());
+                ExecutionResult::Builtin
+            }
+            Err(err) => {
+                eprintln!("db: {err}");
+                ExecutionResult::BuiltinStatus(1)
+            }
+        }
+    }
+
+    fn ping_cmd(&self, args: &[String]) -> ExecutionResult {
+        let output = crate::server_sim::run_ping_command(args);
+        println!("{output}");
+        self.cadet.borrow_mut().record_network_probe(self.database.borrow().as_ref());
+        ExecutionResult::Builtin
+    }
+
+    fn netstat_cmd(&self, _args: &[String]) -> ExecutionResult {
+        let ws = self.current_workspace();
+        self.cadet.borrow_mut().record_network_probe(self.database.borrow().as_ref());
+        println!("\nActive Internet connections (only servers)");
+        println!("{:<6} {:<7} {:<7} {:<23} {:<23} {:<10} {:<15}", "Proto", "Recv-Q", "Send-Q", "Local Address", "Foreign Address", "State", "PID/Program name");
+        println!("{:<6} {:<7} {:<7} {:<23} {:<23} {:<10} {:<15}", "tcp", "0", "0", "0.0.0.0:22", "0.0.0.0:*", "LISTEN", "842/sshd");
+        if self.server_sim.borrow().is_web_running_in(&ws) {
+            println!("{:<6} {:<7} {:<7} {:<23} {:<23} {:<10} {:<15}", "tcp", "0", "0", "127.0.0.1:8080", "0.0.0.0:*", "LISTEN", "19820/web.service");
+        }
+        println!("{:<6} {:<7} {:<7} {:<23} {:<23} {:<10} {:<15}", "tcp", "0", "0", "127.0.0.1:5432", "0.0.0.0:*", "LISTEN", "1042/postgres");
+        println!("{:<6} {:<7} {:<7} {:<23} {:<23} {:<10} {:<15}", "tcp", "0", "0", "127.0.0.1:6379", "0.0.0.0:*", "LISTEN", "1105/redis-server");
+        println!();
+        ExecutionResult::Builtin
+    }
+
+    fn tour_cmd(&self, _args: &[String]) -> ExecutionResult {
+        let mut out = String::new();
+        out.push_str("\n\x1b[1;36m╔════════════════════════════════════════════════════════════════════════════════════╗\x1b[0m\n");
+        out.push_str("║                 ✈️  WELCOME TO THE SHELLPILOT FLIGHT SIMULATOR TOUR                 ║\n");
+        out.push_str("\x1b[1;36m╚════════════════════════════════════════════════════════════════════════════════════╝\x1b[0m\n\n");
+        out.push_str("ShellPilot combines an authentic POSIX shell with a virtual production lab, time-travel,\n");
+        out.push_str("embedded database, and structured pipeline tools. Here is what you can explore:\n\n");
+        out.push_str("1. \x1b[1;33m🌳 Filesystem & Virtual Staging Server (~/lab)\x1b[0m\n");
+        out.push_str("   • \x1b[1mtree\x1b[0m                     : Visual ASCII file hierarchy with color coding\n");
+        out.push_str("   • \x1b[1mcat config/server.conf\x1b[0m   : Inspect realistic production service configs\n");
+        out.push_str("   • \x1b[1mcheat <command>\x1b[0m          : Instant offline flag recipes (e.g. 'cheat grep')\n\n");
+        out.push_str("2. \x1b[1;33m⚙️ Virtual Microservices & Network Testing\x1b[0m\n");
+        out.push_str("   • \x1b[1mservice status\x1b[0m           : Inspect mock 'web' and 'worker' daemons\n");
+        out.push_str("   • \x1b[1mservice start web\x1b[0m        : Boot the payment gateway microservice\n");
+        out.push_str("   • \x1b[1mcurl http://localhost:8080/health\x1b[0m : Test HTTP endpoints\n");
+        out.push_str("   • \x1b[1mnetstat\x1b[0m                  : Inspect listening network ports and sockets\n");
+        out.push_str("   • \x1b[1mping localhost\x1b[0m           : Measure ICMP latency\n\n");
+        out.push_str("3. \x1b[1;33m🗄️ Embedded SQLite Database Engine\x1b[0m\n");
+        out.push_str("   • \x1b[1mdb\x1b[0m                       : View active database tables and metrics\n");
+        out.push_str("   • \x1b[1mdb \"SELECT * FROM customers WHERE plan = 'enterprise'\"\x1b[0m\n");
+        out.push_str("   • \x1b[1mdb schema\x1b[0m                : View relational schema definitions\n\n");
+        out.push_str("4. \x1b[1;33m⏳ Time-Travel & Safe Experimentation\x1b[0m\n");
+        out.push_str("   • \x1b[1mwhatif 'rm -rf logs/*.log'\x1b[0m: Preview blast radius before running dangerous commands\n");
+        out.push_str("   • \x1b[1mundo diff\x1b[0m                : View unified color diff of recent file changes\n");
+        out.push_str("   • \x1b[1mundo\x1b[0m                    : Instantly roll back workspace to previous state\n\n");
+        out.push_str("5. \x1b[1;33m🔮 Structured Stream Operator (|>)\x1b[0m\n");
+        out.push_str("   • \x1b[1mcat data/inventory.jsonl |> .name\x1b[0m : Project JSON fields\n");
+        out.push_str("   • \x1b[1mcat data/inventory.jsonl |> take 2\x1b[0m: Take top N structured records\n");
+        out.push_str("   • \x1b[1mcat app/config.json |> yaml\x1b[0m        : Transmute JSON to YAML\n\n");
+        out.push_str("6. \x1b[1;33m🎓 Academy & Cadet Progression\x1b[0m\n");
+        out.push_str("   • \x1b[1mtutor\x1b[0m                    : Browse 26 lessons across 7 curriculum tracks\n");
+        out.push_str("   • \x1b[1mdrill\x1b[0m                    : Face 7 high-pressure chaos outage scenarios\n");
+        out.push_str("   • \x1b[1mcadet\x1b[0m                    : View your rank, XP, and 11 unlockable badges\n\n");
+        println!("{out}");
+        ExecutionResult::Builtin
+    }
+
+    fn snapshot_cmd(&self, args: &[String]) -> ExecutionResult {
+        let _ = self.ensure_sandbox();
+        let label = if args.is_empty() {
+            "manual snapshot".to_string()
+        } else {
+            args.join(" ")
+        };
+        let mut sb_borrow = self.sandbox.borrow_mut();
+        if let Some(ref mut sb) = *sb_borrow {
+            match sb.pre_command_snapshot(&label) {
+                Ok(id) => {
+                    println!("📸 Saved checkpoint #{id}: '{label}'");
+                    ExecutionResult::Builtin
+                }
+                Err(err) => {
+                    eprintln!("snapshot: {err}");
+                    ExecutionResult::Failed
+                }
+            }
+        } else {
+            eprintln!("snapshot: failed to access sandbox");
+            ExecutionResult::Failed
+        }
+    }
+
     pub fn execute(&self, command: &ParsedCommand) -> ExecutionResult {
         if builtins::is_builtin(&command.program) {
             let _environment = match ScopedEnvironment::apply(&command.environment) {
@@ -619,6 +1150,21 @@ impl Executor {
                 "yaml" => return format_yaml(&command.args),
                 "toml" => return format_toml(&command.args),
                 "help" => return show_help(&command.args),
+                "tutor" => return self.tutor_cmd(&command.args),
+                "whatif" => return self.whatif_cmd(&command.args),
+                "undo" => return self.undo_cmd(&command.args),
+                "snapshot" => return self.snapshot_cmd(&command.args),
+                "tree" => return self.tree_cmd(&command.args),
+                "cheat" => return self.cheat_cmd(&command.args),
+                "doctor" => return self.doctor_cmd(&command.args),
+                "service" => return self.service_cmd(&command.args),
+                "curl" => return self.curl_cmd(&command.args),
+                "cadet" | "profile" => return self.cadet_cmd(&command.args),
+                "drill" => return self.drill_cmd(&command.args),
+                "db" => return self.db_cmd(&command.args),
+                "ping" => return self.ping_cmd(&command.args),
+                "netstat" => return self.netstat_cmd(&command.args),
+                "tour" | "explore" => return self.tour_cmd(&command.args),
                 "command" => {
                     return match builtins::execute(
                         &command.program,
@@ -814,7 +1360,7 @@ impl Executor {
         let body = match func.parse_body(0) {
             Ok(b) => b,
             Err(err) => {
-                eprintln!("mshell: {}: {err}", func.name);
+                eprintln!("shellpilot: {}: {err}", func.name);
                 crate::parser::set_positional_params(old_params);
                 return ExecutionResult::Failed;
             }
@@ -839,7 +1385,7 @@ impl Executor {
         let (output, exit_code) = match self.execute_capture_ast(&sp.source) {
             Ok(pair) => pair,
             Err(err) => {
-                eprintln!("mshell: {err}");
+                eprintln!("shellpilot: {err}");
                 return ExecutionResult::Failed;
             }
         };
@@ -851,7 +1397,7 @@ impl Executor {
         let mut current = match parse_structured_data(&output) {
             Ok(val) => val,
             Err(err) => {
-                eprintln!("mshell: failed to parse structured data: {err}");
+                eprintln!("shellpilot: failed to parse structured data: {err}");
                 return ExecutionResult::Failed;
             }
         };
@@ -896,7 +1442,7 @@ impl Executor {
 
     pub fn execute_capture_ast(&self, ast: &Ast) -> Result<(String, i32), String> {
         let mut fds = [0; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
             return Err(std::io::Error::last_os_error().to_string());
         }
 
@@ -920,9 +1466,6 @@ impl Executor {
             }
             let executor = Executor::new();
             let result = executor.execute_ast(ast);
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-            let _ = std::io::stderr().flush();
             unsafe { libc::_exit(result.status_code()); }
         }
 
@@ -949,14 +1492,33 @@ impl Executor {
         let decision = policy::evaluate(&effects);
 
         let denied = if decision == PolicyDecision::Block {
-            eprintln!("mshell: command blocked by policy ({decision})");
+            eprintln!("shellpilot: command blocked by policy ({decision})");
             true
         } else if decision == PolicyDecision::Ask && !self.confirm_execution(pipeline, &effects) {
-            eprintln!("mshell: command denied by policy");
+            eprintln!("shellpilot: command denied by policy");
             true
         } else {
             false
         };
+
+        let modifies = effects.iter().any(|e| {
+            matches!(
+                e,
+                crate::effects::Effect::FilesystemDelete(_)
+                    | crate::effects::Effect::FilesystemWrite(_)
+                    | crate::effects::Effect::SensitivePathWrite(_)
+            )
+        });
+        if !denied && modifies
+            && let Some(ref mut sb) = *self.sandbox.borrow_mut() {
+                let cmd_str = pipeline
+                    .commands
+                    .iter()
+                    .map(format_command)
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                sb.pre_command_snapshot(&cmd_str).ok();
+            }
 
         let (result, stages) = if denied {
             (ExecutionResult::Failed, Vec::new())
@@ -1036,8 +1598,8 @@ impl Executor {
             audit,
             effects,
         };
-        if let Some(database) = self.database.borrow().as_ref() {
-            if let Err(error) = database.execute(
+        if let Some(database) = self.database.borrow().as_ref()
+            && let Err(error) = database.execute(
                 "INSERT INTO executions
                  (command, working_directory, duration_ms, status, policy, audit, effects, metadata, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
@@ -1054,7 +1616,6 @@ impl Executor {
             ) {
                 eprintln!("timeline: failed to persist execution: {error}");
             }
-        }
         self.timeline.borrow_mut().push(record);
         result
     }
@@ -1095,6 +1656,18 @@ impl Executor {
     }
 
     fn confirm_execution(&self, pipeline: &ParsedPipeline, effects: &[Effect]) -> bool {
+        if let Some(ref sb) = *self.sandbox.borrow() {
+            let all_jailed = effects.iter().all(|e| match e {
+                Effect::FilesystemWrite(p) | Effect::FilesystemDelete(p) => {
+                    sb.is_path_jailed(std::path::Path::new(p), true)
+                }
+                _ => true,
+            });
+            if all_jailed {
+                return true;
+            }
+        }
+
         if !self.interactive.get() || unsafe { libc::isatty(libc::STDIN_FILENO) != 1 } {
             return false;
         }
@@ -1117,8 +1690,8 @@ impl Executor {
                         radius.path
                     ));
                 }
-            } else if let Effect::SensitivePathWrite(path) = effect {
-                if let Some(radius) = crate::effects::calculate_blast_radius_for_path(path) {
+            } else if let Effect::SensitivePathWrite(path) = effect
+                && let Some(radius) = crate::effects::calculate_blast_radius_for_path(path) {
                     blast_summaries.push(format!(
                         "This will modify/overwrite {} file(s) ({}) in sensitive path '{}'",
                         radius.file_count,
@@ -1126,15 +1699,14 @@ impl Executor {
                         radius.path
                     ));
                 }
-            }
         }
 
         if !blast_summaries.is_empty() {
             for summary in &blast_summaries {
-                eprintln!("mshell: ⚠️ Blast-radius preview: {summary}");
+                eprintln!("shellpilot: ⚠️ Blast-radius preview: {summary}");
             }
         } else {
-            eprintln!("mshell: policy asks before executing: {command}");
+            eprintln!("shellpilot: policy asks before executing: {command}");
             eprintln!("effects: {effects:?}");
         }
         eprint!("Confirm execution? [y/N] ");
@@ -1221,7 +1793,7 @@ impl Executor {
                 )
             }
             Err(error) => {
-                eprintln!("mshell: failed waiting for pipeline: {error}");
+                eprintln!("shellpilot: failed waiting for pipeline: {error}");
                 (ExecutionResult::Failed, Vec::new())
             }
         }
@@ -1362,6 +1934,9 @@ impl Executor {
             }
         };
         let process_id = child.id();
+        unsafe {
+            let _ = libc::setpgid(process_id as libc::pid_t, process_id as libc::pid_t);
+        }
         let id = *self.next_job_id.borrow();
         *self.next_job_id.borrow_mut() += 1;
         println!("[{id}] {}", child.id());
@@ -1496,13 +2071,12 @@ impl Executor {
                 continue;
             }
             found = true;
-            if job.state == JobState::Stopped {
-                if let Err(error) = continue_job(&job.process_ids) {
+            if job.state == JobState::Stopped
+                && let Err(error) = continue_job(&job.process_ids) {
                     eprintln!("wait: job {}: {error}", job.id);
                     remaining.push(job);
                     return ExecutionResult::Failed;
                 }
-            }
             let mut statuses = Vec::new();
             let mut failed = false;
             for child in &mut job.children {
@@ -1532,11 +2106,10 @@ impl Executor {
             *jobs = remaining;
             return ExecutionResult::Failed;
         }
-        if let Some(id) = requested {
-            if !remaining.iter().any(|job| job.id == id) && result.status_code() == 0 {
+        if let Some(id) = requested
+            && !remaining.iter().any(|job| job.id == id) && result.status_code() == 0 {
                 println!("[{id}] Done");
             }
-        }
         *jobs = remaining;
         result
     }
@@ -1554,11 +2127,13 @@ impl Executor {
             eprintln!("kill: job {id} not found");
             return ExecutionResult::Failed;
         };
-        let process_group = -(job.process_ids[0] as libc::pid_t);
-        if unsafe { libc::kill(process_group, libc::SIGTERM) } == -1 {
-            eprintln!("kill: job {id}: {}", std::io::Error::last_os_error());
-            return ExecutionResult::Failed;
-        }
+        let pid = job.process_ids[0] as libc::pid_t;
+        let process_group = -pid;
+        if unsafe { libc::kill(process_group, libc::SIGTERM) } == -1
+            && unsafe { libc::kill(pid, libc::SIGTERM) } == -1 {
+                eprintln!("kill: job {id}: {}", std::io::Error::last_os_error());
+                return ExecutionResult::Failed;
+            }
         println!("[{id}] Terminated {}", job.command);
         ExecutionResult::Builtin
     }
@@ -1566,14 +2141,13 @@ impl Executor {
     fn record_history_ast(&self, ast: &Ast) {
         let command = format_ast(ast);
         self.history.borrow_mut().push(command.clone());
-        if let Some(database) = self.database.borrow().as_ref() {
-            if let Err(error) = database.execute(
+        if let Some(database) = self.database.borrow().as_ref()
+            && let Err(error) = database.execute(
                 "INSERT INTO history (command, created_at) VALUES (?1, datetime('now'))",
                 params![command],
             ) {
                 eprintln!("history: failed to persist command: {error}");
             }
-        }
     }
 
     #[allow(dead_code)]
@@ -1585,14 +2159,13 @@ impl Executor {
             .collect::<Vec<_>>()
             .join(" | ");
         self.history.borrow_mut().push(command.clone());
-        if let Some(database) = self.database.borrow().as_ref() {
-            if let Err(error) = database.execute(
+        if let Some(database) = self.database.borrow().as_ref()
+            && let Err(error) = database.execute(
                 "INSERT INTO history (command, created_at) VALUES (?1, datetime('now'))",
                 params![command],
             ) {
                 eprintln!("history: failed to persist command: {error}");
             }
-        }
     }
 
     fn list_history(&self, args: &[String]) -> ExecutionResult {
@@ -1626,12 +2199,11 @@ impl Executor {
             }
             [command] if command == "clear" => {
                 history.clear();
-                if let Some(database) = self.database.borrow().as_ref() {
-                    if let Err(error) = database.execute("DELETE FROM history", []) {
+                if let Some(database) = self.database.borrow().as_ref()
+                    && let Err(error) = database.execute("DELETE FROM history", []) {
                         eprintln!("history: failed to clear persistent history: {error}");
                         return ExecutionResult::Failed;
                     }
-                }
                 return ExecutionResult::Builtin;
             }
             [limit] => {
@@ -2043,14 +2615,17 @@ impl ExecutionResult {
 }
 
 fn open_history_database() -> Result<Connection, String> {
-    let path = if let Some(path) = env::var_os("MSHELL_HISTORY_DB").or_else(|| env::var_os("MELCHIOR_HISTORY_DB")) {
+    let path = if let Some(path) = env::var_os("SHELLPILOT_HISTORY_DB")
+        .or_else(|| env::var_os("MSHELL_HISTORY_DB"))
+        .or_else(|| env::var_os("MELCHIOR_HISTORY_DB"))
+    {
         PathBuf::from(path)
     } else {
         let state = env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
             .ok_or_else(|| "HOME or XDG_STATE_HOME is not set".to_string())?;
-        state.join("mshell").join("history.db")
+        state.join("shellpilot").join("history.db")
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
@@ -2143,6 +2718,7 @@ fn effect_metadata(effect: &Effect) -> Value {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_from_storage(
     command: String,
     working_directory: String,
@@ -2510,7 +3086,7 @@ fn show_help(args: &[String]) -> ExecutionResult {
         eprintln!("help: too many arguments");
         return ExecutionResult::Failed;
     }
-    println!("mshell builtins:");
+    println!("shellpilot builtins:");
     println!("  :                         no-op");
     println!("  cd [DIR|-]                change directory");
     println!("  pwd                       print directory");
@@ -2535,6 +3111,17 @@ fn show_help(args: &[String]) -> ExecutionResult {
     println!("  connections               list established TCP connections");
     println!("  children [PID]            list child processes");
     println!("  json | yaml | toml VALUE  validate and format data");
+    println!("  tutor [start|check|hint|solution|reset|next] interactive academy");
+    println!("  whatif COMMAND...         dry-run preview of command effects");
+    println!("  undo [diff]               revert workspace or preview changes");
+    println!("  snapshot [NAME]           save named sandbox checkpoint");
+    println!("  tree [PATH] [-L N] [-d]   visual directory tree");
+    println!("  cheat [TOOL]              offline Unix tool cheatsheets");
+    println!("  doctor                    diagnose last failed command");
+    println!("  service [start|stop...]   manage simulated server daemons");
+    println!("  curl [-I|-s] URL          query mock local services");
+    println!("  cadet | profile           view flight dossier, XP, and badges");
+    println!("  drill [start|check|hint]  emergency incident drills");
     ExecutionResult::Builtin
 }
 
@@ -2676,14 +3263,14 @@ fn decode_proc_endpoint(value: &str, ipv6: bool) -> Result<String, String> {
             return Err("invalid IPv6 endpoint address".into());
         }
         let mut octets = [0u8; 16];
-        for (index, chunk) in bytes.chunks_exact(2).enumerate() {
+        for (index, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
             octets[index] = u8::from_str_radix(
                 std::str::from_utf8(chunk).map_err(|_| "invalid IPv6 endpoint address")?,
                 16,
             )
             .map_err(|_| "invalid IPv6 endpoint address")?;
         }
-        for chunk in octets.chunks_exact_mut(4) {
+        for chunk in octets.as_chunks_mut::<4>().0 {
             chunk.reverse();
         }
         Ok(format!("[{}]:{port}", std::net::Ipv6Addr::from(octets)))
@@ -2750,12 +3337,11 @@ fn spawn_pipeline_processes(pipeline: &ParsedPipeline) -> Result<Vec<ProcessHand
         let is_last = index + 1 == num_cmds;
 
         let mut current_pipe = [-1, -1];
-        if !is_last {
-            if unsafe { libc::pipe(current_pipe.as_mut_ptr()) } == -1 {
+        if !is_last
+            && unsafe { libc::pipe2(current_pipe.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
                 terminate_processes(&mut processes);
                 return Err(SpawnError::Failed);
             }
-        }
 
         let in_fd = previous_stdout;
         let out_fd = if !is_last { Some(current_pipe[1]) } else { None };
@@ -2913,7 +3499,7 @@ fn apply_redirections(process: &mut Command, redirects: &[Redirection]) -> Resul
             }
             Redirection::HereString(content) => {
                 let mut fds = [0; 2];
-                if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+                if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
                     return Err(std::io::Error::last_os_error().to_string());
                 }
                 let mut write_file = unsafe { File::from_raw_fd(fds[1]) };
@@ -3023,7 +3609,7 @@ impl BuiltinRedirections {
                 }
                 Redirection::HereString(content) => {
                     let mut fds = [0; 2];
-                    if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+                    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
                         return Err(std::io::Error::last_os_error().to_string());
                     }
                     let mut write_file = unsafe { File::from_raw_fd(fds[1]) };
@@ -3117,7 +3703,7 @@ pub fn execute_capture(command_str: &str, last_status: i32) -> Result<String, St
     };
 
     let mut fds = [0; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
         return Err(std::io::Error::last_os_error().to_string());
     }
 
@@ -3141,9 +3727,6 @@ pub fn execute_capture(command_str: &str, last_status: i32) -> Result<String, St
         }
         let executor = Executor::new();
         let result = executor.execute_ast(&ast);
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-        let _ = std::io::stderr().flush();
         unsafe { libc::_exit(result.status_code()); }
     }
 
@@ -3193,11 +3776,10 @@ fn parse_structured_data(raw: &str) -> Result<serde_json::Value, String> {
         }
     }
 
-    if let Ok(v) = serde_yaml::from_str::<serde_json::Value>(trimmed) {
-        if matches!(v, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
+    if let Ok(v) = serde_yaml::from_str::<serde_json::Value>(trimmed)
+        && matches!(v, serde_json::Value::Object(_) | serde_json::Value::Array(_)) {
             return Ok(v);
         }
-    }
 
     let lines: Vec<serde_json::Value> = non_empty_lines
         .into_iter()
@@ -3229,13 +3811,11 @@ fn project_single_part(val: &serde_json::Value, part: &str) -> serde_json::Value
         } else {
             lookup_field(val, field)
         };
-        if let Some(end_bracket) = rest.find(']') {
-            if let Ok(idx) = rest[1..end_bracket].parse::<usize>() {
-                if let serde_json::Value::Array(arr) = obj_part {
+        if let Some(end_bracket) = rest.find(']')
+            && let Ok(idx) = rest[1..end_bracket].parse::<usize>()
+                && let serde_json::Value::Array(arr) = obj_part {
                     return arr.get(idx).cloned().unwrap_or(serde_json::Value::Null);
                 }
-            }
-        }
         serde_json::Value::Null
     } else {
         match val {
@@ -3316,7 +3896,7 @@ fn evaluate_filter_on_elem(
             } else if let Some(b) = actual_val.as_bool() {
                 expr.value.parse::<bool>().map(|v| v == b).unwrap_or(false)
             } else {
-                actual_val.to_string() == expr.value
+                actual_val == expr.value
             }
         }
         crate::parser::FilterOp::NotEqual => {
@@ -3330,7 +3910,7 @@ fn evaluate_filter_on_elem(
             } else if let Some(b) = actual_val.as_bool() {
                 expr.value.parse::<bool>().map(|v| v != b).unwrap_or(true)
             } else {
-                actual_val.to_string() != expr.value
+                actual_val != expr.value
             }
         }
         crate::parser::FilterOp::GreaterThan => {
@@ -3376,29 +3956,30 @@ fn render_structured_output(
     val: &serde_json::Value,
     format: Option<crate::parser::OutputFormat>,
 ) {
+    use crate::builtins::{builtin_print, builtin_println};
     match format {
         Some(crate::parser::OutputFormat::Json) => {
             if let Ok(s) = serde_json::to_string_pretty(val) {
-                println!("{s}");
+                builtin_println(&s);
             }
         }
         Some(crate::parser::OutputFormat::Yaml) => {
             if let Ok(s) = serde_yaml::to_string(val) {
-                print!("{s}");
+                builtin_print(&s);
             }
         }
         Some(crate::parser::OutputFormat::Toml) => {
             if let Ok(s) = toml::to_string_pretty(val) {
-                print!("{s}");
+                builtin_print(&s);
             }
         }
         Some(crate::parser::OutputFormat::Table) => {
             render_ascii_table(val);
         }
         None => match val {
-            serde_json::Value::String(s) => println!("{s}"),
-            serde_json::Value::Number(n) => println!("{n}"),
-            serde_json::Value::Bool(b) => println!("{b}"),
+            serde_json::Value::String(s) => builtin_println(s),
+            serde_json::Value::Number(n) => builtin_println(&n.to_string()),
+            serde_json::Value::Bool(b) => builtin_println(&b.to_string()),
             serde_json::Value::Null => {}
             serde_json::Value::Array(arr) => {
                 let all_primitives = arr.iter().all(|item| {
@@ -3412,28 +3993,27 @@ fn render_structured_output(
                 if all_primitives {
                     for item in arr {
                         match item {
-                            serde_json::Value::String(s) => println!("{s}"),
-                            serde_json::Value::Number(n) => println!("{n}"),
-                            serde_json::Value::Bool(b) => println!("{b}"),
+                            serde_json::Value::String(s) => builtin_println(s),
+                            serde_json::Value::Number(n) => builtin_println(&n.to_string()),
+                            serde_json::Value::Bool(b) => builtin_println(&b.to_string()),
                             _ => {}
                         }
                     }
                 } else if let Ok(s) = serde_json::to_string_pretty(val) {
-                    println!("{s}");
+                    builtin_println(&s);
                 }
             }
             serde_json::Value::Object(_) => {
                 if let Ok(s) = serde_json::to_string_pretty(val) {
-                    println!("{s}");
+                    builtin_println(&s);
                 }
             }
         },
     }
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
 }
 
 fn render_ascii_table(val: &serde_json::Value) {
+    use crate::builtins::builtin_println;
     if let serde_json::Value::Array(arr) = val {
         if arr.is_empty() {
             return;
@@ -3451,7 +4031,7 @@ fn render_ascii_table(val: &serde_json::Value) {
         if keys.is_empty() {
             return;
         }
-        println!("{}", keys.join("\t"));
+        builtin_println(&keys.join("\t"));
         for item in arr {
             let row: Vec<String> = keys
                 .iter()
@@ -3464,10 +4044,10 @@ fn render_ascii_table(val: &serde_json::Value) {
                         .unwrap_or_default()
                 })
                 .collect();
-            println!("{}", row.join("\t"));
+            builtin_println(&row.join("\t"));
         }
     } else {
-        println!("{val}");
+        builtin_println(&val.to_string());
     }
 }
 
@@ -4016,21 +4596,15 @@ mod tests {
         let mut process = Command::new("/bin/sh");
         process.args(["-c", "kill -STOP $$"]);
         reset_child_signals(&mut process, None);
-        let child = process.spawn().expect("spawn stopped test child");
+        let mut child = process.spawn().expect("spawn stopped test child");
         let pid = child.id();
 
         assert!(matches!(wait_for_process(pid), Ok(WaitOutcome::Stopped)));
         unsafe {
             assert_eq!(libc::kill(pid as libc::pid_t, libc::SIGCONT), 0);
         }
-        let mut status = 0;
-        unsafe {
-            assert_eq!(
-                libc::waitpid(pid as libc::pid_t, &mut status, 0),
-                pid as libc::pid_t
-            );
-        }
-        assert!(libc::WIFEXITED(status));
+        let status = child.wait().expect("wait for child");
+        assert!(status.success());
     }
 
     #[test]
@@ -4345,5 +4919,89 @@ mod tests {
 
         let ast6 = crate::parser::parse_ast("timeline status 0", 0).unwrap().unwrap();
         assert_eq!(executor.execute_ast(&ast6).status_code(), 0);
+    }
+
+    #[test]
+    fn tutor_command_lifecycle_in_executor() {
+        let executor = Executor::new();
+
+        // 1. tutor list
+        let ast_list = crate::parser::parse_ast("tutor list", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_list).status_code(), 0);
+
+        // 2. tutor start nav_01
+        let ast_start = crate::parser::parse_ast("tutor start nav_01", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_start).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_01")
+        );
+
+        // 3. tutor hint
+        let ast_hint = crate::parser::parse_ast("tutor hint", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_hint).status_code(), 0);
+
+        // 4. tutor solution
+        let ast_sol = crate::parser::parse_ast("tutor solution", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_sol).status_code(), 0);
+
+        // 5. tutor check (incomplete initially)
+        let ast_check = crate::parser::parse_ast("tutor check", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_check).status_code(), 1);
+
+        // 6. Complete nav_01 in sandbox workspace
+        let ws = executor.current_workspace();
+        std::fs::create_dir_all(ws.join("docs")).unwrap();
+        std::fs::copy(ws.join("README.md"), ws.join("docs").join("overview.txt")).unwrap();
+
+        // 7. tutor check should now succeed and mark nav_01 complete
+        assert_eq!(executor.execute_ast(&ast_check).status_code(), 0);
+
+        // 8. tutor next advances to nav_02 without RefCell borrow panic
+        let ast_next = crate::parser::parse_ast("tutor next", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_next).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_02")
+        );
+
+        // 9. Solve nav_02: mkdir -p services/payment/handlers/v2 services/payment/tests
+        std::fs::create_dir_all(ws.join("services").join("payment").join("handlers").join("v2")).unwrap();
+        std::fs::create_dir_all(ws.join("services").join("payment").join("tests")).unwrap();
+        assert_eq!(executor.execute_ast(&ast_check).status_code(), 0);
+
+        // 10. tutor next advances to nav_03
+        assert_eq!(executor.execute_ast(&ast_next).status_code(), 0);
+        assert_eq!(
+            executor.tutor.borrow().as_ref().unwrap().active_lesson_id.as_deref(),
+            Some("nav_03")
+        );
+
+        // 11. tutor reset
+        let ast_reset = crate::parser::parse_ast("tutor reset", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_reset).status_code(), 0);
+
+        // 12. tutor exit
+        let ast_exit = crate::parser::parse_ast("tutor exit", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_exit).status_code(), 0);
+        assert!(executor.tutor.borrow().as_ref().unwrap().active_lesson_id.is_none());
+    }
+
+    #[test]
+    fn whatif_and_undo_and_snapshot_in_executor() {
+        let executor = Executor::new();
+
+        // 1. whatif command
+        let ast_whatif = crate::parser::parse_ast("whatif rm test.txt", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_whatif).status_code(), 0);
+
+        // 2. snapshot command initializes sandbox and creates checkpoint
+        let ast_snap = crate::parser::parse_ast("snapshot checkpoint1", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_snap).status_code(), 0);
+        assert!(executor.sandbox.borrow().is_some());
+
+        // 3. undo command
+        let ast_undo = crate::parser::parse_ast("undo", 0).unwrap().unwrap();
+        assert_eq!(executor.execute_ast(&ast_undo).status_code(), 0);
     }
 }

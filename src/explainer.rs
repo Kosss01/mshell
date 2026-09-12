@@ -373,7 +373,7 @@ fn lookup_command_description(name: &str) -> String {
         "cd" => "Change the shell working directory.".into(),
         "echo" => "Write arguments to standard output.".into(),
         "printf" => "Format and print arguments to standard output.".into(),
-        "exit" => "Exit the mshell shell.".into(),
+        "exit" => "Exit the ShellPilot shell.".into(),
         "export" => "Set export attribute for shell variables.".into(),
         "unset" => "Unset values and attributes of shell variables.".into(),
         "env" => "Display environment variables or run a command in an altered environment.".into(),
@@ -453,16 +453,14 @@ fn lookup_command_description(name: &str) -> String {
 
 fn query_external_command_summary(name: &str) -> String {
     // Try whatis command
-    if let Ok(output) = Command::new("whatis").arg(name).output() {
-        if output.status.success() {
+    if let Ok(output) = Command::new("whatis").arg(name).output()
+        && output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = text.lines().next() {
-                if let Some(desc) = line.split(" - ").nth(1) {
+            if let Some(line) = text.lines().next()
+                && let Some(desc) = line.split(" - ").nth(1) {
                     return desc.trim().to_string();
                 }
-            }
         }
-    }
 
     // Try --help first non-usage line
     if let Ok(output) = Command::new(name).arg("--help").output() {
@@ -544,11 +542,10 @@ fn lookup_flag_description(
         _ => {
             if let Some(ext) = extractor {
                 let completions = ext.complete_flags(cmd, clean_flag);
-                if let Some(matched) = completions.into_iter().find(|c| c.flag == clean_flag) {
-                    if !matched.description.is_empty() {
+                if let Some(matched) = completions.into_iter().find(|c| c.flag == clean_flag)
+                    && !matched.description.is_empty() {
                         return matched.description;
                     }
-                }
             }
             "Command-specific flag or option.".into()
         }

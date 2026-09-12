@@ -29,11 +29,10 @@ impl HelpCompletionExtractor {
     }
 
     pub fn get_or_extract(&self, command: &str) -> Vec<FlagCompletion> {
-        if let Ok(guard) = self.cache.lock() {
-            if let Some(cached) = guard.get(command) {
+        if let Ok(guard) = self.cache.lock()
+            && let Some(cached) = guard.get(command) {
                 return cached.clone();
             }
-        }
 
         let extracted = Self::extract(command);
         if let Ok(mut guard) = self.cache.lock() {
@@ -90,14 +89,13 @@ impl HelpCompletionExtractor {
                     token
                 };
 
-                if (flag.starts_with("--") && flag.len() > 2) || (flag.starts_with('-') && flag.len() == 2) {
-                    if seen.insert(flag.to_string()) {
+                if ((flag.starts_with("--") && flag.len() > 2) || (flag.starts_with('-') && flag.len() == 2))
+                    && seen.insert(flag.to_string()) {
                         results.push(FlagCompletion {
                             flag: flag.to_string(),
                             description: desc_part.to_string(),
                         });
                     }
-                }
             }
         }
 

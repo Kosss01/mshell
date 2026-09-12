@@ -9,9 +9,11 @@ const ESCAPED_START: char = '\u{3}';
 const ESCAPED_END: char = '\u{4}';
 const DOUBLE_QUOTE_MARKER: char = '\u{5}';
 
+pub type SubshellExecutorFn = fn(&str, i32) -> Result<String, String>;
+
 thread_local! {
     static POSITIONAL_PARAMS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    static SUBSHELL_EXECUTOR: RefCell<Option<fn(&str, i32) -> Result<String, String>>> = const { RefCell::new(None) };
+    static SUBSHELL_EXECUTOR: RefCell<Option<SubshellExecutorFn>> = const { RefCell::new(None) };
 }
 
 pub fn set_positional_params(args: Vec<String>) {
@@ -596,9 +598,9 @@ fn parse_for(tokens: &[Token], _last_status: i32) -> Result<ParsedFor, String> {
     i += 1;
     
     let mut values = Vec::new();
-    if i < tokens.len() {
-        if let Token::Word(w) = &tokens[i] {
-            if w == "in" {
+    if i < tokens.len()
+        && let Token::Word(w) = &tokens[i]
+            && w == "in" {
                 i += 1;
                 while i < tokens.len() {
                     match &tokens[i] {
@@ -610,8 +612,6 @@ fn parse_for(tokens: &[Token], _last_status: i32) -> Result<ParsedFor, String> {
                     i += 1;
                 }
             }
-        }
-    }
     
     // consume optional semicolon
     if i < tokens.len() && matches!(&tokens[i], Token::Semicolon) {
@@ -714,13 +714,11 @@ fn try_parse_function(tokens: &[Token], _last_status: i32) -> Result<Option<Pars
                     name = func_name.clone();
                 }
                 i += 1;
-                if i < tokens.len() {
-                    if let Token::Word(paren) = &tokens[i] {
-                        if paren == "()" {
+                if i < tokens.len()
+                    && let Token::Word(paren) = &tokens[i]
+                        && paren == "()" {
                             i += 1;
                         }
-                    }
-                }
             } else {
                 return Err("function: expected function name".into());
             }
@@ -1027,7 +1025,7 @@ fn expand_command_substitution(input: &str, last_status: i32) -> String {
 
             let mut sub_cmd = String::new();
             let mut depth = 1;
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == '(' {
                     depth += 1;
                 } else if next == ')' {
@@ -1042,7 +1040,7 @@ fn expand_command_substitution(input: &str, last_status: i32) -> String {
             match execute_subshell(&sub_cmd, last_status) {
                 Ok(output) => result.push_str(&output),
                 Err(err) => {
-                    eprintln!("mshell: command substitution error: {err}");
+                    eprintln!("shellpilot: command substitution error: {err}");
                 }
             }
             continue;
@@ -1051,7 +1049,7 @@ fn expand_command_substitution(input: &str, last_status: i32) -> String {
         if ch == '`' {
             let mut sub_cmd = String::new();
             let mut escaped = false;
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if escaped {
                     sub_cmd.push(next);
                     escaped = false;
@@ -1070,7 +1068,7 @@ fn expand_command_substitution(input: &str, last_status: i32) -> String {
             match execute_subshell(&sub_cmd, last_status) {
                 Ok(output) => result.push_str(&output),
                 Err(err) => {
-                    eprintln!("mshell: command substitution error: {err}");
+                    eprintln!("shellpilot: command substitution error: {err}");
                 }
             }
             continue;
@@ -1127,7 +1125,7 @@ fn expand_arithmetic(input: &str) -> String {
                 match evaluate_arithmetic(&expr) {
                     Ok(val) => result.push_str(&val.to_string()),
                     Err(err) => {
-                        eprintln!("mshell: arithmetic error: {err}");
+                        eprintln!("shellpilot: arithmetic error: {err}");
                         result.push('0');
                     }
                 }
@@ -1512,7 +1510,7 @@ fn expand_environment_variables(input: &str, last_status: i32) -> String {
                 if index < params.len() {
                     result.push_str(&params[index]);
                 } else if index == 0 {
-                    result.push_str("mshell");
+                    result.push_str("shellpilot");
                 }
                 continue;
             }
@@ -1598,7 +1596,7 @@ fn resolve_parameter_expression(expr: &str, last_status: i32) -> String {
         if idx < params.len() {
             return params[idx].clone();
         } else if idx == 0 {
-            return "mshell".to_string();
+            return "shellpilot".to_string();
         }
         return String::new();
     }
@@ -1730,11 +1728,10 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
                 }
                 if p.peek() == Some(&'-') {
                     p.next();
-                    if let Some(end) = p.next() {
-                        if tc >= c && tc <= end {
+                    if let Some(end) = p.next()
+                        && tc >= c && tc <= end {
                             matched = true;
                         }
-                    }
                 } else if c == tc {
                     matched = true;
                 }
