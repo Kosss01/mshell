@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/shellpilot_logo_badge.jpg" alt="ShellPilot Logo Badge" width="220">
+  <img src="assets/shellpilot_logo_badge.png" alt="ShellPilot Logo Badge" width="220">
 </p>
 
 # ShellPilot ✈️
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/shellpilot_hero_banner.jpg" alt="ShellPilot Cockpit Flight Simulator" width="100%">
+  <img src="assets/shellpilot_hero_banner.png" alt="ShellPilot Cockpit Flight Simulator" width="100%">
 </p>
 
 ---
@@ -213,7 +213,7 @@ tutor next                 # Advance to the next lesson in the track
 ## 🚨 Emergency Chaos Room (`drill`)
 
 <p align="center">
-  <img src="assets/shellpilot_sre_drill.jpg" alt="SRE Emergency Incident Room" width="100%">
+  <img src="assets/shellpilot_sre_drill.png" alt="SRE Emergency Incident Room" width="100%">
 </p>
 
 Put your production troubleshooting skills to the test under realistic incident conditions:
